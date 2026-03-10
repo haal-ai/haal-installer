@@ -1,0 +1,40 @@
+[package]
+name = "haal-installer"
+version = "0.1.0"
+description = "HAAL Installer - AI Coding Tool Component Manager"
+authors = ["HAAL Team"]
+edition = "2021"
+
+[lib]
+name = "haal_installer_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "haal-installer"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+git2 = "0.19"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+dirs = "5"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+mockall = "0.13"
