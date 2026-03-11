@@ -18,3 +18,7 @@ src-tauri/target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Signing keys (never commit private keys!)
+docs/keys.txt
+*.key
