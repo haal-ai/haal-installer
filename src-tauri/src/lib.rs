@@ -16,6 +16,7 @@ pub mod registry_manager;
 pub mod repo_manager;
 pub mod rollback_manager;
 pub mod self_installer;
+pub mod system_installer;
 pub mod tool_detector;
 pub mod traits;
 pub mod version_tracker;
@@ -420,6 +421,74 @@ fn validate_git_repo(path: String) -> Result<String, String> {
     } else {
         Err("No .git directory found. Please select a git repository.".to_string())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Agentic Systems commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn fetch_system_def(
+    id: String,
+    repo: String,
+    branch: Option<String>,
+) -> Result<crate::models::SystemDef, String> {
+    let entry = crate::models::SystemEntry {
+        id,
+        name: String::new(),
+        description: String::new(),
+        repo,
+        branch,
+        tags: vec![],
+    };
+    crate::system_installer::fetch_system_def(&entry).await
+}
+
+#[tauri::command]
+fn install_system(id: String, repo: String, branch: Option<String>) -> Result<String, String> {
+    let entry = crate::models::SystemEntry {
+        id,
+        name: String::new(),
+        description: String::new(),
+        repo,
+        branch,
+        tags: vec![],
+    };
+    let path = crate::system_installer::install_system(&entry)?;
+    Ok(path.display().to_string())
+}
+
+#[tauri::command]
+fn update_system(id: String) -> Result<(), String> {
+    crate::system_installer::update_system(&id)
+}
+
+#[tauri::command]
+fn delete_system(id: String) -> Result<(), String> {
+    crate::system_installer::delete_system(&id)
+}
+
+#[tauri::command]
+fn scan_installed_systems(
+    systems: Vec<crate::models::SystemEntry>,
+) -> Vec<crate::models::InstalledSystemInfo> {
+    crate::system_installer::scan_installed_systems(&systems)
+}
+
+#[tauri::command]
+fn get_systems_root() -> String {
+    crate::system_installer::systems_root().display().to_string()
+}
+
+#[tauri::command]
+fn get_post_install_steps(
+    def: crate::models::SystemDef,
+    install_path: String,
+) -> Vec<String> {
+    crate::system_installer::post_install_commands(
+        &def,
+        std::path::Path::new(&install_path),
+    )
 }
 
 #[tauri::command]
@@ -986,7 +1055,14 @@ pub fn run() {
             install_components_v2,
             read_mcp_server_def,
             scan_installed_with_status,
-            check_requirements
+            check_requirements,
+            fetch_system_def,
+            install_system,
+            update_system,
+            delete_system,
+            scan_installed_systems,
+            get_systems_root,
+            get_post_install_steps,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

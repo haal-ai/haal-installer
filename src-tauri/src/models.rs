@@ -14,6 +14,8 @@ pub struct HaalManifest {
     pub base_url: String,
     pub collections: Vec<CollectionEntry>,
     pub competencies: Vec<CompetencyEntry>,
+    #[serde(default)]
+    pub systems: Vec<SystemEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +131,9 @@ pub struct MergedCatalog {
     pub competencies: Vec<CompetencyEntry>,
     /// Maps competency_id → source repo local path (for install-time resolution).
     pub competency_sources: std::collections::HashMap<String, PathBuf>,
+    /// All systems from all registries (deduplicated by id, first-seen wins).
+    #[serde(default)]
+    pub systems: Vec<SystemEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +164,94 @@ pub struct ResolvedComponent {
     pub component_type: ComponentType,
     /// Absolute path to the component folder/file in the cloned repo cache.
     pub source_path: PathBuf,
+}
+
+// ---------------------------------------------------------------------------
+// Agentic Systems
+// ---------------------------------------------------------------------------
+
+/// A system entry in the manifest — points to a standalone GitHub repo.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// GitHub repo URL, e.g. "https://github.com/haal-ai/haal-gitpulse"
+    pub repo: String,
+    /// Optional branch (defaults to "main")
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Tags for display/filtering
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// Full system definition loaded from `system.json` at the repo root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemDef {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub version: String,
+    #[serde(default)]
+    pub prerequisites: SystemPrerequisites,
+    #[serde(default)]
+    pub post_install: Option<PostInstall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemPrerequisites {
+    /// Runtime requirements, e.g. ["python>=3.10", "uvx", "aws"]
+    #[serde(default)]
+    pub runtimes: Vec<String>,
+    /// pip install -r requirements.txt needed
+    #[serde(default)]
+    pub pip: bool,
+    /// npm install needed
+    #[serde(default)]
+    pub npm: bool,
+    /// Required environment variables
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PostInstall {
+    /// Shell commands to run after clone (shown to user, not auto-executed)
+    #[serde(default)]
+    pub commands: Vec<String>,
+    /// Human-readable message shown on the done screen
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// Status of an installed system.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum SystemStatus {
+    /// Not installed
+    NotInstalled,
+    /// Installed, up to date
+    Installed,
+    /// Installed, updates available (remote has newer commits)
+    UpdateAvailable,
+}
+
+/// Full info about an installed system returned to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledSystemInfo {
+    pub id: String,
+    pub name: String,
+    pub install_path: String,
+    pub status: SystemStatus,
+    pub current_commit: Option<String>,
 }
 
 /// Legacy component kept for adapter compatibility.

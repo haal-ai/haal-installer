@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::errors::{FileSystemError, HaalError, NetworkError};
-use crate::models::{CollectionEntry, CompetencyEntry, MergedCatalog};
+use crate::models::{CollectionEntry, CompetencyEntry, MergedCatalog, SystemEntry};
 
 /// Entry in `repos-manifest.json` — a secondary registry repo.
 #[derive(Debug, Clone, Deserialize)]
@@ -38,6 +38,8 @@ struct RegistryManifest {
     pub collections: Vec<CollectionEntry>,
     #[serde(default)]
     pub competencies: Vec<CompetencyEntry>,
+    #[serde(default)]
+    pub systems: Vec<SystemEntry>,
 }
 
 /// Manages cloning/pulling registry repos and building the merged catalog.
@@ -114,6 +116,7 @@ impl RepoManager {
         let mut collections: HashMap<String, CollectionEntry> = HashMap::new();
         let mut competencies: HashMap<String, CompetencyEntry> = HashMap::new();
         let mut competency_sources: HashMap<String, PathBuf> = HashMap::new();
+        let mut systems: HashMap<String, SystemEntry> = HashMap::new();
 
         for (local_path, _priority) in &sources {
             let manifest = self.load_registry_manifest(local_path);
@@ -125,13 +128,17 @@ impl RepoManager {
                     competency_sources.insert(comp.id.clone(), local_path.clone());
                     competencies.insert(comp.id.clone(), comp);
                 }
-            }
+                for sys in m.systems {
+                    // First-seen wins for systems (seed has highest priority, processed last)
+                    systems.insert(sys.id.clone(), sys);
+                }            }
         }
 
         Ok(MergedCatalog {
             collections: collections.into_values().collect(),
             competencies: competencies.into_values().collect(),
             competency_sources,
+            systems: systems.into_values().collect(),
         })
     }
 
