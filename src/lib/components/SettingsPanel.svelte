@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
-  import { settingsStore, type Theme } from "../stores/settingsStore";
+  import { settingsStore, type Theme } from "../stores/settingsStore.svelte";
 
   // --- Repository state ---
   interface Repository {

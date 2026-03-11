@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
-  import { settingsStore } from "../stores/settingsStore";
+  import { settingsStore } from "../stores/settingsStore.svelte";
 
   let networkOnline = $state(true);
   let langDropdownOpen = $state(false);

@@ -8,7 +8,7 @@
   import LogViewer from "./lib/components/LogViewer.svelte";
   import SelfInstallDialog from "./lib/components/SelfInstallDialog.svelte";
   import UpdateNotification from "./lib/components/UpdateNotification.svelte";
-  import { settingsStore } from "./lib/stores/settingsStore";
+  import { settingsStore } from "./lib/stores/settingsStore.svelte";
 
   interface SelfInstallStatus {
     is_installed: boolean;

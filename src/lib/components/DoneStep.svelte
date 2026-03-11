@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
-  import { wizardStore } from "../stores/wizardStore";
-  import { progressStore } from "../stores/progressStore";
+  import { wizardStore } from "../stores/wizardStore.svelte";
+  import { progressStore } from "../stores/progressStore.svelte";
 
   // --- Derived state ---
 

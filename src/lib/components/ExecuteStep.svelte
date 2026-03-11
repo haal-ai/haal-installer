@@ -2,9 +2,9 @@
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { wizardStore } from "../stores/wizardStore";
-  import { progressStore } from "../stores/progressStore";
-  import { componentsStore } from "../stores/componentsStore";
+  import { wizardStore } from "../stores/wizardStore.svelte";
+  import { progressStore } from "../stores/progressStore.svelte";
+  import { componentsStore } from "../stores/componentsStore.svelte";
 
   // --- Types ---
 

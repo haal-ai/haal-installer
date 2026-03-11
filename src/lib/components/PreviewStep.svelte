@@ -1,8 +1,8 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
-  import { wizardStore } from "../stores/wizardStore";
-  import { componentsStore, type ComponentInfo } from "../stores/componentsStore";
+  import { wizardStore } from "../stores/wizardStore.svelte";
+  import { componentsStore, type ComponentInfo } from "../stores/componentsStore.svelte";
 
   // --- Types matching Rust backend ---
 

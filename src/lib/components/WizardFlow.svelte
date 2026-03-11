@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
-  import { wizardStore, type WizardStep } from "../stores/wizardStore";
+  import { wizardStore, type WizardStep } from "../stores/wizardStore.svelte";
   import ConnectStep from "./ConnectStep.svelte";
   import ChooseStep from "./ChooseStep.svelte";
   import PreviewStep from "./PreviewStep.svelte";

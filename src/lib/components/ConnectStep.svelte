@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
-  import { authStore } from "../stores/authStore";
+  import { authStore } from "../stores/authStore.svelte";
 
   let authMethod = $state<"pat" | "oauth">("pat");
   let patToken = $state("");

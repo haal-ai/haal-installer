@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
-  import { componentsStore, type ComponentInfo } from "../stores/componentsStore";
+  import { componentsStore, type ComponentInfo } from "../stores/componentsStore.svelte";
 
   let detectedTools = $state<string[]>([]);
   let toolTargets = $state<Record<string, string[]>>({});
