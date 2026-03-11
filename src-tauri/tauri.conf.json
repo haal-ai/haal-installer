@@ -71,7 +71,7 @@
       "endpoints": [
         "https://releases.haal.dev/{{target}}/{{arch}}/{{current_version}}"
       ],
-      "pubkey": "PLACEHOLDER_PUBLIC_KEY"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZEMzIzQzM3OThGNUNFMjMKUldRanp2V1lOend5YlRBaGZPcGw5cVMzYklZSU5aWHZkdVdJRWcvYmg1bWwrYTJWZXpvK1NwRmsK"
     }
   }
 }
