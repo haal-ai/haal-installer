@@ -2,6 +2,12 @@
   import { invoke } from "@tauri-apps/api/core";
   import { componentsStore, type SystemEntry } from "../stores/componentsStore.svelte";
 
+  interface Props {
+    onNavigate?: (view: string) => void;
+  }
+
+  let { onNavigate }: Props = $props();
+
   // --- Types ---
 
   interface SystemDef {
@@ -44,15 +50,15 @@
   let expandedId = $state<string | null>(null);
 
   let systems = $derived(componentsStore.mergedCatalog?.systems ?? []);
+  let isConnected = $derived(componentsStore.mergedCatalog !== null);
 
   // --- Load on mount ---
 
   async function loadAll() {
-    const [root] = await Promise.allSettled([
-      invoke<string>("get_systems_root"),
-    ]);
-    if (root.status === "fulfilled") systemsRoot = root.value;
+    if (!isConnected) return;
 
+    const [root] = await Promise.allSettled([invoke<string>("get_systems_root")]);
+    if (root.status === "fulfilled") systemsRoot = root.value;
     if (systems.length === 0) return;
 
     // Scan installed status
@@ -159,7 +165,30 @@
     </p>
   </div>
 
-  {#if systems.length === 0}
+  {#if !isConnected}
+    <div class="flex flex-col items-center justify-center py-16 gap-4 text-center">
+      <svg class="w-12 h-12 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+      </svg>
+      <p class="text-sm text-gray-500 dark:text-gray-400">Connect to a registry first to browse available systems.</p>
+      <button
+        onclick={() => { wizardStore.setStep("connect"); onNavigate?.("wizard"); }}
+        class="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+      >
+        Go to Connect
+      </button>
+    </div>
+  {:else if catalogLoading}
+    <div class="flex items-center gap-3 py-12 justify-center text-gray-400 dark:text-gray-500 text-sm">
+      <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+      </svg>
+      Loading registry…
+    </div>
+  {:else if catalogError}
+    <div class="py-12 text-center text-sm text-red-500 dark:text-red-400">⛔ {catalogError}</div>
+  {:else if systems.length === 0}
     <div class="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">
       No systems found in the registry.
     </div>

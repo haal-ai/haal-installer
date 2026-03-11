@@ -74,7 +74,7 @@
       {:else if activeView === "wizard"}
         <WizardFlow />
       {:else if activeView === "systems"}
-        <SystemsStep />
+        <SystemsStep onNavigate={handleNavigate} />
       {:else if activeView === "settings"}
         <SettingsPanel />
       {:else if activeView === "logs"}

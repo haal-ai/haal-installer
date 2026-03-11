@@ -158,6 +158,7 @@ fn check_update_available(path: &Path) -> SystemStatus {
                 SystemStatus::Installed
             }
         }
+        // If git commands fail, assume installed but can't determine update status
         Err(_) => SystemStatus::Installed,
     }
 }
@@ -170,12 +171,21 @@ pub fn post_install_commands(def: &SystemDef, install_path: &Path) -> Vec<String
     let mut cmds = Vec::new();
     let path_str = install_path.display();
 
-    if def.prerequisites.pip {
-        cmds.push(format!("cd {path_str} && pip install -r requirements.txt"));
+    // Prefer explicit install.commands if provided
+    if let Some(install) = &def.install {
+        for cmd in &install.commands {
+            cmds.push(format!("cd {path_str} && {cmd}"));
+        }
+    } else {
+        // Fallback: auto-detect from prerequisites flags
+        if def.prerequisites.pip {
+            cmds.push(format!("cd {path_str} && pip install -e \".[all]\""));
+        }
+        if def.prerequisites.npm {
+            cmds.push(format!("cd {path_str} && npm install"));
+        }
     }
-    if def.prerequisites.npm {
-        cmds.push(format!("cd {path_str} && npm install"));
-    }
+
     if let Some(post) = &def.post_install {
         for cmd in &post.commands {
             cmds.push(format!("cd {path_str} && {cmd}"));

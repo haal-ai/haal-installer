@@ -23,6 +23,7 @@ function createWizardStore() {
   let destinations = $state<Record<string, string>>({});
   let isExecuting = $state(false);
   let registryUrl = $state<string>("");
+  let isConnected = $state(false);
   let reinstallAll = $state(false);
   let installScope = $state<InstallScope>("home");
   let repoPath = $state<string>("");
@@ -42,13 +43,18 @@ function createWizardStore() {
     get destinations() { return destinations; },
     get isExecuting() { return isExecuting; },
     get registryUrl() { return registryUrl; },
+    get isConnected() { return isConnected; },
     get reinstallAll() { return reinstallAll; },
     get installScope() { return installScope; },
     get repoPath() { return repoPath; },
     get installRequest() { return installRequest; },
     get currentStepIndex() { return steps.indexOf(currentStep); },
     get canGoBack() { return steps.indexOf(currentStep) > 0 && !isExecuting; },
-    get canGoForward() { return steps.indexOf(currentStep) < steps.length - 1 && !isExecuting; },
+    get canGoForward() {
+      if (isExecuting) return false;
+      if (currentStep === "connect") return isConnected;
+      return steps.indexOf(currentStep) < steps.length - 1;
+    },
 
     setStep(step: WizardStep) { currentStep = step; },
 
@@ -82,6 +88,7 @@ function createWizardStore() {
 
     setExecuting(value: boolean) { isExecuting = value; },
     setRegistryUrl(url: string) { registryUrl = url; },
+    setConnected(value: boolean) { isConnected = value; },
     setReinstallAll(value: boolean) { reinstallAll = value; },
     setInstallScope(value: InstallScope) { installScope = value; },
     setRepoPath(value: string) { repoPath = value; },
@@ -94,6 +101,7 @@ function createWizardStore() {
       isExecuting = false;
       registryUrl = "";
       reinstallAll = false;
+      isConnected = false;
       installScope = "home";
       repoPath = "";
       installRequest = null;

@@ -56,6 +56,8 @@ pub struct CompetencyDetail {
     pub agents: Vec<String>,
     #[serde(default)]
     pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub systems: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +156,7 @@ pub enum ComponentType {
     OlafData,
     Package,
     McpServer,
+    System,
 }
 
 /// A resolved, installable component with its source path in the local cache.
@@ -196,9 +199,22 @@ pub struct SystemDef {
     pub description: String,
     pub version: String,
     #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
     pub prerequisites: SystemPrerequisites,
+    /// Custom install commands (e.g. pip install -e ".[all]")
+    #[serde(default)]
+    pub install: Option<SystemInstall>,
     #[serde(default)]
     pub post_install: Option<PostInstall>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemInstall {
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -207,17 +223,26 @@ pub struct SystemPrerequisites {
     /// Runtime requirements, e.g. ["python>=3.10", "uvx", "aws"]
     #[serde(default)]
     pub runtimes: Vec<String>,
-    /// pip install -r requirements.txt needed
+    /// pip install needed (runs `pip install -e ".[all]"` or custom install commands)
     #[serde(default)]
     pub pip: bool,
     /// npm install needed
     #[serde(default)]
     pub npm: bool,
-    /// Required environment variables
+    /// Required environment variables (must be set before use)
     #[serde(default)]
     pub env: Vec<String>,
+    /// Optional environment variables with descriptions
+    #[serde(default)]
+    pub env_optional: Vec<EnvVar>,
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnvVar {
+    pub name: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

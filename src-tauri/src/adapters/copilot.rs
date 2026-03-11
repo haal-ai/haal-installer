@@ -20,48 +20,46 @@ impl CopilotAdapter {
 
 impl ToolAdapter for CopilotAdapter {
     fn tool_name(&self) -> &str {
-        "GitHub Copilot"
+        "VS Code (Copilot)"
     }
 
     fn detect_installation(&self) -> Result<Option<PathBuf>, HaalError> {
-        let home = dirs::home_dir().ok_or_else(|| HaalError::FileSystem(FileSystemError {
-            message: "Could not determine home directory".to_string(),
-            path: None,
-        }))?;
-
-        // Platform-specific paths
+        // Copilot is now built into VS Code — detect VS Code itself
         let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") {
             let mut paths = Vec::new();
             if let Some(config) = dirs::config_dir() {
-                paths.push(config.join("GitHub Copilot"));
+                paths.push(config.join("Code").join("User"));
             }
-            paths.push(home.join(".github").join("copilot"));
+            // VS Code installed via user installer
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                paths.push(std::path::PathBuf::from(local).join("Programs").join("Microsoft VS Code"));
+            }
             paths
+        } else if cfg!(target_os = "macos") {
+            vec![
+                dirs::home_dir().unwrap_or_default().join("Library").join("Application Support").join("Code").join("User"),
+            ]
         } else {
             vec![
-                home.join(".github").join("copilot"),
-                home.join(".config").join("github-copilot"),
+                dirs::home_dir().unwrap_or_default().join(".config").join("Code").join("User"),
             ]
         };
 
         for path in &candidates {
-            debug!("Checking Copilot installation at: {}", path.display());
             if path.exists() {
-                debug!("Found Copilot installation at: {}", path.display());
                 return Ok(Some(path.clone()));
             }
         }
-
-        debug!("No Copilot installation found");
         Ok(None)
     }
 
     fn default_destinations(&self) -> Vec<Destination> {
         let mut dests = Vec::new();
         if let Some(home) = dirs::home_dir() {
+            // Skills/agents go to .github/copilot/
             dests.push(Destination {
                 tool_name: self.tool_name().to_string(),
-                path: home.join(".github").join("copilot").join("plugins"),
+                path: home.join(".github").join("copilot"),
                 enabled: true,
             });
         }

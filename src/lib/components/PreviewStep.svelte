@@ -138,6 +138,16 @@
     return list;
   });
 
+  let allSystems = $derived.by(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const id of allCompetencyIds) {
+      const d = componentsStore.competencyDetails[id];
+      if (d) for (const s of (d.systems ?? [])) if (!seen.has(s)) { seen.add(s); list.push(s); }
+    }
+    return list;
+  });
+
   let reinstallAll = $derived(wizardStore.reinstallAll);
 
   // Which tools support which component types
@@ -153,10 +163,10 @@
       case "skills":   return allSkills.length;
       case "powers":   return isKiro ? allPowers.length : null;
       case "hooks":    return isKiro ? allHooks.length : null;
-      case "commands": return (isClaude || isKiro || isWindsurf) ? allCommands.length : null;
-      case "rules":    return (isKiro || isCursor || isWindsurf || isClaude) ? allRules.length : null;
+      case "commands": return (isClaude || isKiro || isWindsurf || isCursor || isCopilot) ? allCommands.length : null;
+      case "rules":    return (isKiro || isCursor || isWindsurf || isClaude || isCopilot) ? allRules.length : null;
       case "agents":   return null; // repo-only, shown in repo column
-      case "mcp":      return (isKiro || isClaude || isCursor || isWindsurf) ? allMcpServers.length : null;
+      case "mcp":      return (isKiro || isClaude || isCursor || isWindsurf || isCopilot) ? allMcpServers.length : null;
       default:         return null;
     }
   }
@@ -625,7 +635,7 @@
     {#if allMcpServers.length > 0}
       {@const mcpTools = (installPaths?.toolPaths ?? []).filter(tp => {
         const tl = tp.tool.toLowerCase();
-        return tl.includes("kiro") || tl.includes("claude") || tl.includes("cursor") || tl.includes("windsurf");
+        return tl.includes("kiro") || tl.includes("claude") || tl.includes("cursor") || tl.includes("windsurf") || tl.includes("copilot");
       })}
       <div class="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden">
         <div class="px-3 py-2 bg-cyan-50 dark:bg-cyan-900/20 flex items-center gap-2">
@@ -691,6 +701,31 @@
               </p>
             {/if}
           </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- SYSTEMS -->
+    {#if allSystems.length > 0}
+      <div class="border border-orange-200 dark:border-orange-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-orange-50 dark:bg-orange-900/20 flex items-center gap-2">
+          <span class="text-sm">🚀</span>
+          <p class="text-sm font-medium text-orange-800 dark:text-orange-200">Agentic Systems</p>
+          <span class="text-xs text-orange-500 dark:text-orange-400 ml-auto">Cloned to ~/.haal/systems/</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allSystems as sysId}
+            {@const sysEntry = componentsStore.mergedCatalog?.systems.find(s => s.id === sysId)}
+            <div class="flex items-center justify-between">
+              <div class="min-w-0">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{sysId}</span>
+                {#if sysEntry}
+                  <p class="text-xs text-gray-400 dark:text-gray-500 truncate">{sysEntry.description}</p>
+                {/if}
+              </div>
+              <span class="flex-shrink-0 inline-block px-1.5 py-0.5 text-xs rounded bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400">+ clone</span>
+            </div>
+          {/each}
         </div>
       </div>
     {/if}

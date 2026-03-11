@@ -134,11 +134,19 @@ impl RepoManager {
                 }            }
         }
 
+        let mut collections_vec: Vec<CollectionEntry> = collections.into_values().collect();
+        let mut competencies_vec: Vec<CompetencyEntry> = competencies.into_values().collect();
+        let mut systems_vec: Vec<SystemEntry> = systems.into_values().collect();
+
+        collections_vec.sort_by(|a, b| a.name.cmp(&b.name));
+        competencies_vec.sort_by(|a, b| a.name.cmp(&b.name));
+        systems_vec.sort_by(|a, b| a.name.cmp(&b.name));
+
         Ok(MergedCatalog {
-            collections: collections.into_values().collect(),
-            competencies: competencies.into_values().collect(),
+            collections: collections_vec,
+            competencies: competencies_vec,
             competency_sources,
-            systems: systems.into_values().collect(),
+            systems: systems_vec,
         })
     }
 

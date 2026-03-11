@@ -15,6 +15,7 @@
   let view = $state<"collections" | "competencies">("collections");
 
   async function loadManifest() {
+    if (!wizardStore.isConnected) return;
     componentsStore.setLoading(true);
     loadError = "";
     try {

@@ -90,7 +90,8 @@
     {/if}
   </div>
 
-  <!-- Navigation buttons -->
+  <!-- Navigation buttons — hidden on connect step (it has its own actions) -->
+  {#if wizardStore.currentStep !== "connect"}
   <div class="flex justify-between mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
     <button
       onclick={() => wizardStore.prevStep()}
@@ -115,4 +116,5 @@
       </button>
     {/if}
   </div>
+  {/if}
 </div>

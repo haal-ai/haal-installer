@@ -24,6 +24,7 @@ export interface CompetencyDetail {
   rules: string[];
   agents: string[];
   mcpServers: string[];
+  systems: string[];
 }
 
 export interface McpServerDef {
@@ -178,6 +179,14 @@ function createComponentsStore() {
         for (const c of detail.commands ?? [])    addComp(c, "command",   "commands");
         for (const a of detail.agents ?? [])      addComp(a, "agent",     "agents");
         for (const m of detail.mcpServers ?? [])  addComp(m, "mcpServer", "mcpservers");
+        for (const s of detail.systems ?? []) {
+          // For systems, source_path carries the repo URL from the manifest
+          const sysEntry = mergedCatalog?.systems.find(sys => sys.id === s);
+          if (sysEntry && !seen.has(`system:${s}`)) {
+            seen.add(`system:${s}`);
+            comps.push({ id: s, componentType: "system", sourcePath: sysEntry.repo });
+          }
+        }
       }
 
       return comps;

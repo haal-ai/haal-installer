@@ -40,6 +40,7 @@
       });
       authStore.setCredentials(creds as any);
       if (customRepoUrl.trim()) wizardStore.setRegistryUrl(customRepoUrl.trim());
+      wizardStore.setConnected(true);
       wizardStore.nextStep();
     } catch (e: any) { error = String(e); } finally { loading = false; }
   }
@@ -70,6 +71,7 @@
       });
       authStore.setCredentials(creds as any);
       if (customRepoUrl.trim()) wizardStore.setRegistryUrl(customRepoUrl.trim());
+      wizardStore.setConnected(true);
       wizardStore.nextStep();
     } catch (e: any) { error = String(e); } finally { loading = false; }
   }

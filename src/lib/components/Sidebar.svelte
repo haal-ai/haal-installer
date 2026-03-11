@@ -9,10 +9,9 @@
   let { activeView, onNavigate }: Props = $props();
 
   const navItems = [
-    { id: "wizard",  icon: "wand",   labelKey: "nav.wizard" },
-    { id: "systems", icon: "rocket", labelKey: "nav.systems" },
-    { id: "settings",icon: "cog",    labelKey: "nav.settings" },
-    { id: "logs",    icon: "document",labelKey: "nav.logs" },
+    { id: "wizard",   icon: "wand",     labelKey: "nav.wizard" },
+    { id: "settings", icon: "cog",      labelKey: "nav.settings" },
+    { id: "logs",     icon: "document", labelKey: "nav.logs" },
   ] as const;
 </script>
 
