@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::checksum_validator::ChecksumValidator;
 use crate::conflict_detector::ConflictDetector;
-use crate::errors::{FileSystemError, HaalError, IntegrityError, NetworkError, ValidationError};
+use crate::errors::{FileSystemError, HaalError, IntegrityError, ValidationError};
 use crate::models::{Component, ComponentFailure, Destination, OperationResult};
 use crate::rollback_manager::RollbackManager;
 use crate::traits::{ProgressReporter, ToolAdapter};
@@ -390,11 +390,12 @@ impl OperationEngine {
             start,
         );
 
+        let rollback_performed = !failed.is_empty();
         Ok(OperationResult {
             success: failed.is_empty(),
             components_succeeded: succeeded,
-            components_failed: failed,
-            rollback_performed: failed.iter().count() > 0,
+            components_failed: failed.clone(),
+            rollback_performed,
         })
     }
 

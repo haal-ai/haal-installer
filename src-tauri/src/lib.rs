@@ -403,7 +403,6 @@ fn save_config(preferences: UserPreferences) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[tauri::command]
 /// Reads log files from `~/.haal/logs/` and returns their content as a string.
 #[tauri::command]
 fn read_logs() -> Result<String, String> {
@@ -443,6 +442,7 @@ fn export_logs(output_path: String) -> Result<(), String> {
     std::fs::write(&output_path, content).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! Welcome to HAAL Installer.", name)
 }
@@ -451,7 +451,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             greet,
