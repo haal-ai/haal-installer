@@ -11,6 +11,7 @@ function createWizardStore() {
   let selectedComponents = $state<SelectedComponent[]>([]);
   let destinations = $state<Record<string, string>>({});
   let isExecuting = $state(false);
+  let registryUrl = $state<string>("");
 
   const steps: WizardStep[] = [
     "connect",
@@ -32,6 +33,9 @@ function createWizardStore() {
     },
     get isExecuting() {
       return isExecuting;
+    },
+    get registryUrl() {
+      return registryUrl;
     },
     get currentStepIndex() {
       return steps.indexOf(currentStep);
@@ -85,11 +89,16 @@ function createWizardStore() {
       isExecuting = value;
     },
 
+    setRegistryUrl(url: string) {
+      registryUrl = url;
+    },
+
     reset() {
       currentStep = "connect";
       selectedComponents = [];
       destinations = {};
       isExecuting = false;
+      registryUrl = "";
     },
   };
 }

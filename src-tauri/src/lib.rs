@@ -50,13 +50,24 @@ pub struct SelfInstallStatus {
 /// Checks the current self-installation state without modifying anything.
 #[tauri::command]
 fn check_self_install() -> Result<SelfInstallStatus, String> {
-    let installer = SelfInstaller::new(SelfInstaller::haal_home());
-    let needs_update = installer.needs_update().map_err(|e| e.to_string())?;
-    Ok(SelfInstallStatus {
-        is_installed: installer.is_installed(),
-        home_exists: installer.home_exists(),
-        needs_update,
-    })
+    // In debug builds, skip self-install — the binary is locked by the dev process
+    #[cfg(debug_assertions)]
+    return Ok(SelfInstallStatus {
+        is_installed: true,
+        home_exists: true,
+        needs_update: false,
+    });
+
+    #[cfg(not(debug_assertions))]
+    {
+        let installer = SelfInstaller::new(SelfInstaller::haal_home());
+        let needs_update = installer.needs_update().map_err(|e| e.to_string())?;
+        Ok(SelfInstallStatus {
+            is_installed: installer.is_installed(),
+            home_exists: installer.home_exists(),
+            needs_update,
+        })
+    }
 }
 
 /// Performs the full self-installation: creates the HAAL home directory
@@ -103,11 +114,118 @@ fn relaunch_from_home() -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Authenticates with GitHub using either a Personal Access Token or OAuth.
-///
-/// For PAT: validates the token against the GitHub API and stores the
-/// resulting credentials.  For OAuth: initiates the device-code flow
-/// (credential storage is handled after the user completes the flow).
+/// Checks whether the GitHub CLI is installed and authenticated.
+/// Returns: { installed: bool, authenticated: bool }
+#[tauri::command]
+fn check_gh_cli() -> serde_json::Value {
+    // Check if gh is installed
+    let installed = std::process::Command::new("gh")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !installed {
+        return serde_json::json!({ "installed": false, "authenticated": false });
+    }
+
+    // Unset GITHUB_TOKEN/GH_TOKEN so we check stored credentials, not the env var
+    let authenticated = std::process::Command::new("gh")
+        .args(["auth", "status"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !authenticated {
+        return serde_json::json!({ "installed": true, "authenticated": false, "username": null });
+    }
+
+    // Fetch the username of the stored account
+    let username = std::process::Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
+        .map(|b| String::from_utf8_lossy(&b).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    serde_json::json!({ "installed": true, "authenticated": true, "username": username })
+}
+
+/// Launches `gh auth login` in a new terminal window so the user can authenticate.
+/// Unsets GITHUB_TOKEN first so gh stores credentials rather than using the env var.
+#[tauri::command]
+fn launch_gh_auth_login() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "cmd", "/k", "gh auth login"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("osascript")
+        .args(["-e", "tell app \"Terminal\" to do script \"unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login\""])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("sh")
+        .args(["-c", "x-terminal-emulator -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login' || xterm -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login'"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Reads the token stored by `gh auth login` and uses it to authenticate.
+/// Runs `gh auth token` and validates the result against the GitHub API.
+#[tauri::command]
+async fn authenticate_gh_cli(enterprise_url: Option<String>) -> Result<GitHubCredentials, String> {
+    // Ignore enterprise_url if it's a github.com URL (not a GHE instance)
+    let enterprise_url = enterprise_url.filter(|u| {
+        let u = u.trim();
+        !u.is_empty() && !u.contains("github.com/")
+    });
+    // Run `gh auth token` to get the stored token (ignore env var)
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_TOKEN")
+        .output()
+        .map_err(|_| "GitHub CLI (gh) not found. Please install it from https://cli.github.com and run `gh auth login` first.".to_string())?;
+
+    if !output.status.success() {
+        return Err("gh auth token failed — have you run `gh auth login`?".to_string());
+    }
+
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err("No token found. Please run `gh auth login` first.".to_string());
+    }
+
+    let config_dir = SelfInstaller::haal_home().join("config");
+    let authenticator = GitHubAuthenticator::new(config_dir);
+    let credentials = authenticator
+        .authenticate_pat(token, enterprise_url)
+        .await
+        .map_err(|e| e.to_string())?;
+    authenticator
+        .store_credentials(&credentials)
+        .map_err(|e| e.to_string())?;
+    Ok(credentials)
+}
+
+/// Authenticates with GitHub using a Personal Access Token.
 #[tauri::command]
 async fn authenticate_github(
     auth_type: String,
@@ -196,10 +314,14 @@ async fn fetch_repo_manifest(repo_url: String, repo_id: String) -> Result<RepoMa
 
 /// Discovers all available components from all enabled repositories,
 /// resolving duplicates by priority and respecting pinned components.
+/// If `registry_url` is provided, uses that instead of the default registry.
 #[tauri::command]
-async fn discover_components() -> Result<Vec<Component>, String> {
+async fn discover_components(registry_url: Option<String>) -> Result<Vec<Component>, String> {
     let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
-    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
+    let url = registry_url
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string());
+    let manager = RegistryManager::new(url, cache_dir);
     manager
         .discover_all_components()
         .await
@@ -461,6 +583,9 @@ pub fn run() {
             add_to_path,
             relaunch_from_home,
             authenticate_github,
+            authenticate_gh_cli,
+            check_gh_cli,
+            launch_gh_auth_login,
             verify_repo_access,
             get_stored_credentials,
             check_network_status,

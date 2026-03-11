@@ -8,7 +8,7 @@ use crate::models::Component;
 
 /// Default registry URL for the HAAL official registry.
 pub const DEFAULT_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/haal-org/registry/main/master_manifest.json";
+    "https://raw.githubusercontent.com/haal-ai/haal-skills/main/haal_manifest.json";
 
 /// Entry in the master manifest describing a component repository.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,10 +223,16 @@ impl RegistryManager {
     }
 
     /// Fetches a Repo_Manifest from a specific repository.
-    /// Constructs the manifest URL as `{repo_url}/raw/main/haal_manifest.json`.
+    /// If the URL ends in .json, treats it as a direct manifest URL.
+    /// Otherwise constructs the manifest URL as `{repo_url}/raw/main/haal_manifest.json`.
     /// On success, caches the result. On failure, falls back to cached version.
     pub async fn fetch_repo_manifest(&self, repo_url: &str, repo_id: &str) -> Result<RepoManifest, HaalError> {
-        let manifest_url = format!("{}/raw/main/haal_manifest.json", repo_url.trim_end_matches('/'));
+        let trimmed = repo_url.trim_end_matches('/');
+        let manifest_url = if trimmed.ends_with(".json") {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}/raw/main/haal_manifest.json")
+        };
 
         match self.fetch_remote_repo_manifest(&manifest_url).await {
             Ok(manifest) => {
@@ -328,7 +334,26 @@ impl RegistryManager {
     /// Aggregates components from all enabled repositories, resolving duplicates by priority.
     /// When the same component ID appears in multiple repos, the highest-priority repo wins
     /// UNLESS a lower-priority version is pinned.
+    /// If the registry URL points directly to a repo manifest (.json), skips master manifest.
     pub async fn discover_all_components(&self) -> Result<Vec<Component>, HaalError> {
+        // If the registry URL is a direct manifest file, fetch it as a single repo manifest
+        if self.registry_url.ends_with(".json") {
+            let manifest = self.fetch_remote_repo_manifest(&self.registry_url).await
+                .or_else(|_| {
+                    // fallback to cache using a stable id derived from the url
+                    let id = "default";
+                    self.get_cached_repo_manifest(id)
+                        .and_then(|opt| opt.ok_or_else(|| HaalError::Network(NetworkError {
+                            message: "Registry unreachable and no cache available".to_string(),
+                            url: Some(self.registry_url.clone()),
+                            status_code: None,
+                        })))
+                })?;
+            // cache it
+            let _ = self.cache_repo_manifest(&manifest);
+            return Ok(manifest.components);
+        }
+
         let master = self.fetch_master_manifest().await?;
 
         // Collect (priority, repo_id, component) tuples from all enabled repos

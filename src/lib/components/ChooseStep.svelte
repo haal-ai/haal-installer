@@ -2,25 +2,30 @@
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
   import { componentsStore, type ComponentInfo } from "../stores/componentsStore.svelte";
+  import { wizardStore } from "../stores/wizardStore.svelte";
 
   let detectedTools = $state<string[]>([]);
   let toolTargets = $state<Record<string, string[]>>({});
   let filterRepo = $state("all");
   let filterTool = $state("all");
   let expandedId = $state<string | null>(null);
+  let loadError = $state("");
 
   // Load components and detected tools on mount
   async function loadData() {
     componentsStore.setLoading(true);
+    loadError = "";
     try {
       const [components, tools] = await Promise.all([
-        invoke<ComponentInfo[]>("discover_components"),
+        invoke<ComponentInfo[]>("discover_components", {
+          registryUrl: wizardStore.registryUrl || null,
+        }),
         invoke<{ name: string }[]>("detect_tools"),
       ]);
       componentsStore.setAvailable(components);
       detectedTools = tools.map((t) => t.name);
-    } catch {
-      // Backend may not be ready
+    } catch (e: any) {
+      loadError = String(e);
     } finally {
       componentsStore.setLoading(false);
     }
@@ -145,6 +150,17 @@
   {#if componentsStore.loading}
     <div class="text-center py-12 text-gray-500 dark:text-gray-400">
       <p>{$_("wizard.choose.loading")}</p>
+    </div>
+  {:else if loadError}
+    <div class="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-4 flex flex-col gap-2">
+      <p class="text-sm font-medium text-red-700 dark:text-red-400">Failed to load components</p>
+      <p class="text-xs text-red-600 dark:text-red-300 font-mono break-all">{loadError}</p>
+      <button
+        onclick={loadData}
+        class="self-start px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white"
+      >
+        Retry
+      </button>
     </div>
   {:else}
     <!-- Search and filters -->
