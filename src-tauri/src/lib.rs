@@ -1004,6 +1004,143 @@ fn export_logs(output_path: String) -> Result<(), String> {
     std::fs::write(&output_path, content).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// Last-install profile — persists the user's choices so they can quick-update
+// ---------------------------------------------------------------------------
+
+/// The minimal set of choices needed to replay an install without the wizard.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastInstallProfile {
+    /// Seed registry URL used during the install.
+    pub seed_url: String,
+    /// Competency IDs the user selected (already expanded from collections).
+    pub competency_ids: Vec<String>,
+    /// Tool names the user selected (e.g. ["Kiro", "Cursor"]).
+    pub selected_tools: Vec<String>,
+    /// Install scope: "home" | "repo" | "both".
+    pub scope: String,
+    /// Repo path (empty string if scope is "home").
+    pub repo_path: String,
+    /// ISO-8601 timestamp of the last install.
+    pub installed_at: String,
+}
+
+fn last_install_path() -> std::path::PathBuf {
+    SelfInstaller::haal_home()
+        .join("config")
+        .join("last_install.json")
+}
+
+/// Persists the user's install choices for future quick-updates.
+#[tauri::command]
+fn save_last_install(profile: LastInstallProfile) -> Result<(), String> {
+    let path = last_install_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())
+}
+
+/// Loads the last install profile, or returns null if none exists.
+#[tauri::command]
+fn load_last_install() -> Result<Option<LastInstallProfile>, String> {
+    let path = last_install_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    let json = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let profile: LastInstallProfile = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    Ok(Some(profile))
+}
+
+/// Runs a quick-update using the last saved install profile.
+/// Re-fetches the registry, resolves the same competencies, and re-installs.
+#[tauri::command]
+async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
+    // Load saved profile
+    let profile = load_last_install()?
+        .ok_or_else(|| "No previous install found".to_string())?;
+
+    // Re-initialize catalog from the same seed
+    let seed_url = if profile.seed_url.is_empty() {
+        DEFAULT_REGISTRY_URL.to_string()
+    } else {
+        profile.seed_url.clone()
+    };
+    let catalog = initialize_catalog(Some(seed_url)).await?;
+
+    // Resolve competency details and build component list
+    let cache_root = SelfInstaller::haal_home().join("cache").join("repos");
+    let _repo_mgr = RepoManager::new(cache_root);
+    let reg_mgr = RegistryManager::new(
+        profile.seed_url.clone(),
+        SelfInstaller::haal_home().join("cache").join("manifests"),
+    );
+
+    let mut components: Vec<models::ResolvedComponent> = Vec::new();
+    let seen = &mut std::collections::HashSet::new();
+
+    for comp_id in &profile.competency_ids {
+        // Find the competency entry in the merged catalog
+        let entry = catalog.competencies.iter().find(|c| c.id == *comp_id);
+        let source_path = catalog.competency_sources.get(comp_id).cloned()
+            .unwrap_or_default();
+
+        if let Some(entry) = entry {
+            match reg_mgr.fetch_competency(entry, &entry.manifest_url).await {
+                Ok(detail) => {
+                    let add = |id: &str, ctype: &str, subdir: &str, comps: &mut Vec<models::ResolvedComponent>, seen: &mut std::collections::HashSet<String>| {
+                        let key = format!("{ctype}:{id}");
+                        if seen.insert(key) {
+                            comps.push(models::ResolvedComponent {
+                                id: id.to_string(),
+                                component_type: match ctype {
+                                    "skill"     => models::ComponentType::Skill,
+                                    "power"     => models::ComponentType::Power,
+                                    "rule"      => models::ComponentType::Rule,
+                                    "hook"      => models::ComponentType::Hook,
+                                    "command"   => models::ComponentType::Command,
+                                    "agent"     => models::ComponentType::Agent,
+                                    "mcpServer" => models::ComponentType::McpServer,
+                                    _           => models::ComponentType::OlafData,
+                                },
+                                source_path: source_path.join(subdir).join(id),
+                            });
+                        }
+                    };
+                    for s in &detail.skills     { add(s, "skill",     "skills",     &mut components, seen); }
+                    for p in &detail.powers     { add(p, "power",     "powers",     &mut components, seen); }
+                    for r in &detail.rules      { add(r, "rule",      "rules",      &mut components, seen); }
+                    for h in &detail.hooks      { add(h, "hook",      "hooks",      &mut components, seen); }
+                    for c in &detail.commands   { add(c, "command",   "commands",   &mut components, seen); }
+                    for a in &detail.agents     { add(a, "agent",     "agents",     &mut components, seen); }
+                    for m in &detail.mcp_servers { add(m, "mcpServer", "mcpservers", &mut components, seen); }
+                }
+                Err(e) => eprintln!("WARN: Could not fetch competency {comp_id}: {e}"),
+            }
+        }
+    }
+
+    let scope = match profile.scope.as_str() {
+        "repo"  => models::InstallScope::Repo,
+        "both"  => models::InstallScope::Both,
+        _       => models::InstallScope::Home,
+    };
+
+    let request = InstallRequest {
+        components,
+        scope,
+        repo_path: if profile.repo_path.is_empty() { None } else { Some(profile.repo_path.into()) },
+        selected_tools: profile.selected_tools,
+        reinstall_all: true,
+    };
+
+    let installer = Installer::new(app, true);
+    Ok(installer.install(&request).await)
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! Welcome to HAAL Installer.", name)
@@ -1063,6 +1200,9 @@ pub fn run() {
             scan_installed_systems,
             get_systems_root,
             get_post_install_steps,
+            save_last_install,
+            load_last_install,
+            quick_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

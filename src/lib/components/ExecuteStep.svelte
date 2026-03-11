@@ -170,6 +170,24 @@
       });
       progressStore.complete();
       completed = true;
+
+      // Persist the install choices for quick-update
+      if (result.success || result.componentsSucceeded.length > 0) {
+        try {
+          await invoke("save_last_install", {
+            profile: {
+              seedUrl: wizardStore.registryUrl || "",
+              competencyIds: wizardStore.selectedComponents.map(c => c.id),
+              selectedTools: req.selectedTools,
+              scope: req.scope,
+              repoPath: req.repoPath ?? "",
+              installedAt: new Date().toISOString(),
+            },
+          });
+        } catch (e) {
+          console.warn("Could not save last install profile:", e);
+        }
+      }
     } catch (err) {
       error = String(err);
       progressStore.complete();

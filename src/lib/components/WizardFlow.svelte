@@ -1,11 +1,27 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
+  import { invoke } from "@tauri-apps/api/core";
   import { wizardStore, type WizardStep } from "../stores/wizardStore.svelte";
   import ConnectStep from "./ConnectStep.svelte";
   import ChooseStep from "./ChooseStep.svelte";
   import PreviewStep from "./PreviewStep.svelte";
   import ExecuteStep from "./ExecuteStep.svelte";
   import DoneStep from "./DoneStep.svelte";
+
+  interface LastInstallProfile {
+    seedUrl: string;
+    competencyIds: string[];
+    selectedTools: string[];
+    scope: string;
+    repoPath: string;
+    installedAt: string;
+  }
+
+  interface InstallResult {
+    success: boolean;
+    componentsSucceeded: string[];
+    componentsFailed: { componentId: string; error: string }[];
+  }
 
   const steps: { id: WizardStep; labelKey: string }[] = [
     { id: "connect", labelKey: "wizard.steps.connect" },
@@ -15,18 +31,99 @@
     { id: "done", labelKey: "wizard.steps.done" },
   ];
 
+  let lastProfile = $state<LastInstallProfile | null>(null);
+  let quickUpdateRunning = $state(false);
+  let quickUpdateDone = $state(false);
+  let quickUpdateError = $state("");
+  let quickUpdateResult = $state<InstallResult | null>(null);
+
+  $effect(() => {
+    invoke<LastInstallProfile | null>("load_last_install")
+      .then(p => { lastProfile = p; })
+      .catch(() => {});
+  });
+
+  async function runQuickUpdate() {
+    quickUpdateRunning = true;
+    quickUpdateError = "";
+    quickUpdateResult = null;
+    try {
+      const result = await invoke<InstallResult>("quick_update");
+      quickUpdateResult = result;
+      quickUpdateDone = true;
+    } catch (e) {
+      quickUpdateError = String(e);
+    } finally {
+      quickUpdateRunning = false;
+    }
+  }
+
+  function dismissQuickUpdate() {
+    quickUpdateDone = false;
+    quickUpdateResult = null;
+    quickUpdateError = "";
+  }
+
+  function formatDate(iso: string): string {
+    try { return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }); }
+    catch { return iso; }
+  }
+
   function goToStep(step: WizardStep) {
     if (wizardStore.isExecuting) return;
     const targetIdx = steps.findIndex((s) => s.id === step);
     const currentIdx = wizardStore.currentStepIndex;
-    // Only allow clicking on completed (earlier) steps or current step
-    if (targetIdx <= currentIdx) {
-      wizardStore.setStep(step);
-    }
+    if (targetIdx <= currentIdx) wizardStore.setStep(step);
   }
 </script>
 
 <div class="max-w-4xl mx-auto">
+  <!-- Quick-update banner — shown when a previous install profile exists -->
+  {#if lastProfile && !quickUpdateDone && wizardStore.currentStep === "connect"}
+    <div class="mb-6 p-4 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 flex items-start gap-4">
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-semibold text-blue-800 dark:text-blue-200">Update your last install</p>
+        <p class="text-xs text-blue-600 dark:text-blue-400 mt-0.5">
+          Last installed {formatDate(lastProfile.installedAt)} ·
+          {lastProfile.competencyIds.length} competenc{lastProfile.competencyIds.length === 1 ? "y" : "ies"} ·
+          {lastProfile.selectedTools.join(", ")}
+        </p>
+        {#if quickUpdateError}
+          <p class="text-xs text-red-600 dark:text-red-400 mt-1">{quickUpdateError}</p>
+        {/if}
+      </div>
+      <button
+        onclick={runQuickUpdate}
+        disabled={quickUpdateRunning}
+        class="flex-shrink-0 px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+      >
+        {#if quickUpdateRunning}
+          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+          </svg>
+          Updating…
+        {:else}
+          Quick Update
+        {/if}
+      </button>
+    </div>
+  {/if}
+
+  <!-- Quick-update result -->
+  {#if quickUpdateDone && quickUpdateResult}
+    {@const ok = quickUpdateResult.componentsSucceeded.length}
+    {@const fail = quickUpdateResult.componentsFailed.length}
+    <div class="mb-6 p-4 rounded-xl border {fail === 0 ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20' : 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'} flex items-center gap-4">
+      <span class="text-lg">{fail === 0 ? "✅" : "⚠️"}</span>
+      <p class="flex-1 text-sm font-medium {fail === 0 ? 'text-green-800 dark:text-green-200' : 'text-amber-800 dark:text-amber-200'}">
+        {ok} component{ok !== 1 ? "s" : ""} updated{fail > 0 ? `, ${fail} failed` : " successfully"}.
+        Restart your AI tools to pick up the changes.
+      </p>
+      <button onclick={dismissQuickUpdate} class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Dismiss</button>
+    </div>
+  {/if}
+
   <!-- Step progress bar -->
   <nav class="mb-8" aria-label="Wizard progress">
     <ol class="flex items-center w-full">
