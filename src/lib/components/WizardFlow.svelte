@@ -102,15 +102,17 @@
     >
       {$_("common.back")}
     </button>
-    <button
-      onclick={() => wizardStore.nextStep()}
-      disabled={!wizardStore.canGoForward}
-      class="px-4 py-2 text-sm font-medium rounded-lg
-        {wizardStore.canGoForward
-          ? 'bg-blue-600 text-white hover:bg-blue-700'
-          : 'bg-gray-300 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed'}"
-    >
-      {$_("common.next")}
-    </button>
+    {#if !["preview", "execute", "done"].includes(wizardStore.currentStep)}
+      <button
+        onclick={() => wizardStore.nextStep()}
+        disabled={!wizardStore.canGoForward}
+        class="px-4 py-2 text-sm font-medium rounded-lg
+          {wizardStore.canGoForward
+            ? 'bg-blue-600 text-white hover:bg-blue-700'
+            : 'bg-gray-300 dark:bg-gray-700 text-gray-500 dark:text-gray-400 cursor-not-allowed'}"
+      >
+        {$_("common.next")}
+      </button>
+    {/if}
   </div>
 </div>

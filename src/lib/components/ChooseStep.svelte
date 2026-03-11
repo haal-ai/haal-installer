@@ -1,29 +1,27 @@
-<script lang="ts">
+﻿<script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
-  import { componentsStore, type ComponentInfo } from "../stores/componentsStore.svelte";
+  import {
+    componentsStore,
+    type MergedCatalog,
+    type CompetencyDetail,
+  } from "../stores/componentsStore.svelte";
   import { wizardStore } from "../stores/wizardStore.svelte";
 
-  let detectedTools = $state<string[]>([]);
-  let toolTargets = $state<Record<string, string[]>>({});
-  let filterRepo = $state("all");
-  let filterTool = $state("all");
-  let expandedId = $state<string | null>(null);
   let loadError = $state("");
+  // Which competency panel is expanded
+  let expandedCompetency = $state<string | null>(null);
+  // view: "collections" | "competencies"
+  let view = $state<"collections" | "competencies">("collections");
 
-  // Load components and detected tools on mount
-  async function loadData() {
+  async function loadManifest() {
     componentsStore.setLoading(true);
     loadError = "";
     try {
-      const [components, tools] = await Promise.all([
-        invoke<ComponentInfo[]>("discover_components", {
-          registryUrl: wizardStore.registryUrl || null,
-        }),
-        invoke<{ name: string }[]>("detect_tools"),
-      ]);
-      componentsStore.setAvailable(components);
-      detectedTools = tools.map((t) => t.name);
+      const catalog = await invoke<MergedCatalog>("initialize_catalog", {
+        seedUrl: wizardStore.registryUrl || null,
+      });
+      componentsStore.setMergedCatalog(catalog);
     } catch (e: any) {
       loadError = String(e);
     } finally {
@@ -31,110 +29,61 @@
     }
   }
 
-  loadData();
-
-  // Derived: unique categories, repos
-  let categories = $derived(
-    Array.from(new Set(componentsStore.available.map((c) => c.componentType)))
-  );
-  let repos = $derived(
-    Array.from(new Set(componentsStore.available.map((c) => c.repository)))
-  );
-
-  // Derived: filtered components
-  let filtered = $derived.by(() => {
-    let list = componentsStore.available;
-    const q = componentsStore.searchQuery.toLowerCase();
-    if (q) {
-      list = list.filter(
-        (c) =>
-          c.name.toLowerCase().includes(q) ||
-          c.description.toLowerCase().includes(q) ||
-          c.id.toLowerCase().includes(q)
-      );
+  async function loadCompetency(id: string, manifestUrl: string) {
+    if (componentsStore.competencyDetails[id]) return;
+    componentsStore.setCompetencyLoading(id, true);
+    try {
+      const detail = await invoke<CompetencyDetail>("fetch_competency", {
+        competencyId: id,
+        manifestUrl,
+        // Use local repo path when available — avoids network call
+        baseUrl: componentsStore.mergedCatalog?.competencySources[id] ?? "",
+      });
+      componentsStore.setCompetencyDetail(id, detail);
+    } catch {
+      componentsStore.setCompetencyLoading(id, false);
     }
-    if (componentsStore.filterType !== "all") {
-      list = list.filter((c) => c.componentType === componentsStore.filterType);
-    }
-    if (filterRepo !== "all") {
-      list = list.filter((c) => c.repository === filterRepo);
-    }
-    if (filterTool !== "all") {
-      list = list.filter((c) => c.compatibleTools.includes(filterTool));
-    }
-    return list;
-  });
-
-  // Grouped by type
-  let grouped = $derived.by(() => {
-    const groups: Record<string, ComponentInfo[]> = {};
-    for (const c of filtered) {
-      const key = c.componentType;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(c);
-    }
-    return groups;
-  });
-
-  // Build dependency map: component id -> list of component ids that depend on it
-  let dependentsMap = $derived.by(() => {
-    const map: Record<string, string[]> = {};
-    for (const c of componentsStore.available) {
-      for (const dep of c.dependencies) {
-        if (!map[dep]) map[dep] = [];
-        map[dep].push(c.id);
-      }
-    }
-    return map;
-  });
-
-  function getTransitiveDeps(id: string, visited = new Set<string>()): string[] {
-    const comp = componentsStore.available.find((c) => c.id === id);
-    if (!comp) return [];
-    const deps: string[] = [];
-    for (const dep of comp.dependencies) {
-      if (!visited.has(dep)) {
-        visited.add(dep);
-        deps.push(dep);
-        deps.push(...getTransitiveDeps(dep, visited));
-      }
-    }
-    return deps;
   }
 
-  function hasSelectedDependents(id: string): boolean {
-    const dependents = dependentsMap[id] ?? [];
-    return dependents.some((d) => componentsStore.isSelected(d));
-  }
-
-  function handleToggle(comp: ComponentInfo) {
-    if (comp.pinned) return;
-    const isCurrentlySelected = componentsStore.isSelected(comp.id);
-
-    if (!isCurrentlySelected) {
-      // Selecting: auto-select dependencies
-      componentsStore.toggleSelection(comp.id);
-      const deps = getTransitiveDeps(comp.id);
-      for (const dep of deps) {
-        if (!componentsStore.isSelected(dep)) {
-          componentsStore.toggleSelection(dep);
-        }
-      }
+  function toggleExpand(id: string, manifestUrl: string) {
+    if (expandedCompetency === id) {
+      expandedCompetency = null;
     } else {
-      // Deselecting: prevent if dependents are selected
-      if (hasSelectedDependents(comp.id)) return;
-      componentsStore.toggleSelection(comp.id);
+      expandedCompetency = id;
+      loadCompetency(id, manifestUrl);
     }
   }
 
-  function toggleToolTarget(componentId: string, tool: string) {
-    const current = toolTargets[componentId] ?? [];
-    if (current.includes(tool)) {
-      toolTargets = { ...toolTargets, [componentId]: current.filter((t) => t !== tool) };
-    } else {
-      toolTargets = { ...toolTargets, [componentId]: [...current, tool] };
-    }
+  // When a collection is selected, also expand its competencies view
+  function toggleCollection(id: string) {
+    componentsStore.toggle(`collection:${id}`);
   }
+
+  function toggleCompetency(id: string) {
+    componentsStore.toggle(`competency:${id}`);
+  }
+
+  function isCollectionSelected(id: string) {
+    return componentsStore.isSelected(`collection:${id}`);
+  }
+
+  function isCompetencySelected(id: string) {
+    return componentsStore.isSelected(`competency:${id}`);
+  }
+
+  // A competency is "covered" if a selected collection already includes it
+  function isCompetencyCovered(id: string): boolean {
+    for (const col of componentsStore.collections) {
+      if (componentsStore.isSelected(`collection:${col.id}`) && col.competencyIds.includes(id)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  loadManifest();
+
+  let hasSelection = $derived(componentsStore.selectedCount > 0);
 </script>
 
 <div class="space-y-4">
@@ -153,233 +102,208 @@
     </div>
   {:else if loadError}
     <div class="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 p-4 flex flex-col gap-2">
-      <p class="text-sm font-medium text-red-700 dark:text-red-400">Failed to load components</p>
+      <p class="text-sm font-medium text-red-700 dark:text-red-400">Failed to load registry</p>
       <p class="text-xs text-red-600 dark:text-red-300 font-mono break-all">{loadError}</p>
-      <button
-        onclick={loadData}
-        class="self-start px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white"
-      >
+      <button onclick={loadManifest} class="self-start px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white">
         Retry
       </button>
     </div>
-  {:else}
-    <!-- Search and filters -->
-    <div class="flex flex-wrap gap-3 items-center">
-      <input
-        type="text"
-        value={componentsStore.searchQuery}
-        oninput={(e) => componentsStore.setSearchQuery((e.target as HTMLInputElement).value)}
-        placeholder={$_("wizard.choose.searchPlaceholder")}
-        class="flex-1 min-w-[200px] px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
-          bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100
-          focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-      />
-      <!-- Category filter -->
-      <select
-        value={componentsStore.filterType}
-        onchange={(e) => componentsStore.setFilterType((e.target as HTMLSelectElement).value)}
-        class="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
-          bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+  {:else if componentsStore.collections.length > 0}
+    <!-- View toggle -->
+    <div class="flex gap-1 p-1 bg-gray-100 dark:bg-gray-800 rounded-lg w-fit">
+      <button
+        onclick={() => (view = "collections")}
+        class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+          {view === 'collections' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}"
       >
-        <option value="all">{$_("wizard.choose.filterAll")}</option>
-        {#each categories as cat}
-          <option value={cat}>{cat}</option>
-        {/each}
-      </select>
-      <!-- Repo filter -->
-      {#if repos.length > 1}
-        <select
-          value={filterRepo}
-          onchange={(e) => (filterRepo = (e.target as HTMLSelectElement).value)}
-          class="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
-            bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-        >
-          <option value="all">{$_("wizard.choose.filterRepo")}</option>
-          {#each repos as repo}
-            <option value={repo}>{repo}</option>
-          {/each}
-        </select>
-      {/if}
-      <!-- Tool filter -->
-      {#if detectedTools.length > 0}
-        <select
-          value={filterTool}
-          onchange={(e) => (filterTool = (e.target as HTMLSelectElement).value)}
-          class="px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg
-            bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-        >
-          <option value="all">{$_("wizard.choose.filterTool")}</option>
-          {#each detectedTools as tool}
-            <option value={tool}>{tool}</option>
-          {/each}
-        </select>
-      {/if}
+        Collections
+      </button>
+      <button
+        onclick={() => (view = "competencies")}
+        class="px-3 py-1.5 text-xs font-medium rounded-md transition-colors
+          {view === 'competencies' ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}"
+      >
+        Competencies
+      </button>
     </div>
 
-    <!-- Bulk actions -->
-    <div class="flex items-center justify-between">
-      <span class="text-sm text-gray-600 dark:text-gray-400">
-        {$_("wizard.choose.selectedCount", { values: { count: componentsStore.selectedCount } })}
-      </span>
-      <div class="flex gap-2">
-        <button
-          onclick={() => componentsStore.selectAll()}
-          class="px-3 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600
-            text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-        >
-          {$_("wizard.choose.selectAll")}
-        </button>
-        <button
-          onclick={() => componentsStore.deselectAll()}
-          class="px-3 py-1 text-xs font-medium rounded border border-gray-300 dark:border-gray-600
-            text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-        >
-          {$_("wizard.choose.deselectAll")}
-        </button>
-      </div>
-    </div>
-
-    <!-- Component list grouped by type -->
-    {#if filtered.length === 0}
-      <div class="text-center py-8 text-gray-500 dark:text-gray-400">
-        <p>{$_("wizard.choose.noComponents")}</p>
-      </div>
-    {:else}
-      <div class="space-y-6">
-        {#each Object.entries(grouped) as [type, components]}
-          <div>
-            <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
-              {type}
-            </h3>
-            <div class="space-y-2">
-              {#each components as comp}
-                {@const isSelected = componentsStore.isSelected(comp.id)}
-                {@const isDepLocked = hasSelectedDependents(comp.id)}
-                {@const isExpanded = expandedId === comp.id}
-                <div
-                  class="border rounded-lg transition-colors
-                    {isSelected
-                      ? 'border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10'
-                      : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'}"
-                >
-                  <div class="flex items-center gap-3 p-3">
-                    <!-- Checkbox -->
-                    <button
-                      onclick={() => handleToggle(comp)}
-                      disabled={comp.pinned || (isSelected && isDepLocked)}
-                      class="flex-shrink-0"
-                      aria-label="Toggle {comp.name}"
-                    >
-                      <div
-                        class="w-5 h-5 rounded border-2 flex items-center justify-center
-                          {comp.pinned
-                            ? 'border-gray-300 dark:border-gray-600 bg-gray-100 dark:bg-gray-700 cursor-not-allowed'
-                            : isSelected
-                              ? 'border-blue-600 bg-blue-600 text-white'
-                              : 'border-gray-300 dark:border-gray-600 hover:border-blue-400'}"
-                      >
-                        {#if comp.pinned}
-                          <!-- Lock icon -->
-                          <svg class="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd" />
-                          </svg>
-                        {:else if isSelected}
-                          <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
-                          </svg>
-                        {/if}
-                      </div>
-                    </button>
-
-                    <!-- Component info -->
-                    <button
-                      onclick={() => (expandedId = isExpanded ? null : comp.id)}
-                      class="flex-1 text-left min-w-0"
-                    >
-                      <div class="flex items-center gap-2">
-                        <span class="font-medium text-sm text-gray-900 dark:text-gray-100 truncate">
-                          {comp.name}
-                        </span>
-                        {#if comp.pinned}
-                          <span class="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 rounded">
-                            {$_("wizard.choose.pinned")}
-                          </span>
-                        {/if}
-                        {#if comp.deprecated}
-                          <span class="inline-flex items-center px-1.5 py-0.5 text-xs font-medium bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 rounded">
-                            {$_("wizard.choose.deprecated")}
-                          </span>
-                        {/if}
-                      </div>
-                      <p class="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">
-                        {comp.description}
-                      </p>
-                    </button>
-
-                    <!-- Version badge -->
-                    <span class="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
-                      {comp.version.substring(0, 7)}
-                    </span>
-                  </div>
-
-                  <!-- Expanded details -->
-                  {#if isExpanded}
-                    <div class="px-3 pb-3 pt-1 border-t border-gray-100 dark:border-gray-700 space-y-2 text-xs">
-                      <div class="grid grid-cols-2 gap-2">
-                        <div>
-                          <span class="text-gray-500 dark:text-gray-400">{$_("wizard.choose.version")}:</span>
-                          <span class="ml-1 text-gray-700 dark:text-gray-300">{comp.version.substring(0, 12)}</span>
-                        </div>
-                        <div>
-                          <span class="text-gray-500 dark:text-gray-400">{$_("wizard.choose.repository")}:</span>
-                          <span class="ml-1 text-gray-700 dark:text-gray-300">{comp.repository}</span>
-                        </div>
-                      </div>
-                      {#if comp.compatibleTools.length > 0}
-                        <div>
-                          <span class="text-gray-500 dark:text-gray-400">{$_("wizard.choose.compatibleTools")}:</span>
-                          <span class="ml-1 text-gray-700 dark:text-gray-300">{comp.compatibleTools.join(", ")}</span>
-                        </div>
-                      {/if}
-                      {#if comp.dependencies.length > 0}
-                        <div>
-                          <span class="text-gray-500 dark:text-gray-400">{$_("wizard.choose.dependencies")}:</span>
-                          <span class="ml-1 text-gray-700 dark:text-gray-300">{comp.dependencies.join(", ")}</span>
-                        </div>
-                      {/if}
-                      <!-- Multi-tool target selection -->
-                      {#if isSelected && detectedTools.length > 0}
-                        <div>
-                          <span class="text-gray-500 dark:text-gray-400">{$_("wizard.choose.targetTools")}:</span>
-                          <div class="flex flex-wrap gap-1.5 mt-1">
-                            {#each detectedTools.filter((t) => comp.compatibleTools.includes(t)) as tool}
-                              {@const isTargeted = (toolTargets[comp.id] ?? []).includes(tool)}
-                              <button
-                                onclick={() => toggleToolTarget(comp.id, tool)}
-                                class="px-2 py-0.5 rounded text-xs border transition-colors
-                                  {isTargeted
-                                    ? 'bg-blue-100 dark:bg-blue-900/40 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
-                                    : 'border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 hover:border-blue-300'}"
-                              >
-                                {tool}
-                              </button>
-                            {/each}
-                          </div>
-                        </div>
-                      {/if}
-                      <!-- Dependency lock warning -->
-                      {#if isSelected && isDepLocked}
-                        <p class="text-amber-600 dark:text-amber-400 italic">
-                          {$_("wizard.choose.depRequired", { values: { name: (dependentsMap[comp.id] ?? []).filter((d) => componentsStore.isSelected(d)).join(", ") } })}
-                        </p>
-                      {/if}
-                    </div>
-                  {/if}
+    {#if view === "collections"}
+      <!-- Collections: quick-install bundles -->
+      <div class="space-y-2">
+        {#each componentsStore.collections as col}
+          {@const selected = isCollectionSelected(col.id)}
+          <div
+            class="border rounded-lg transition-colors cursor-pointer
+              {selected ? 'border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10' : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'}"
+          >
+            <div class="flex items-start gap-3 p-4" onclick={() => toggleCollection(col.id)} role="button" tabindex="0" onkeydown={(e) => e.key === 'Enter' && toggleCollection(col.id)}>
+              <!-- Checkbox -->
+              <div class="mt-0.5 w-5 h-5 flex-shrink-0 rounded border-2 flex items-center justify-center
+                {selected ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 dark:border-gray-600'}">
+                {#if selected}
+                  <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                  </svg>
+                {/if}
+              </div>
+              <div class="flex-1 min-w-0">
+                <p class="font-medium text-sm text-gray-900 dark:text-gray-100">{col.name}</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{col.description}</p>
+                <div class="flex flex-wrap gap-1 mt-2">
+                  {#each col.competencyIds as cid}
+                    {@const entry = componentsStore.competencies.find(c => c.id === cid)}
+                    {#if entry}
+                      <span class="inline-flex items-center px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">
+                        {entry.name}
+                      </span>
+                    {/if}
+                  {/each}
                 </div>
-              {/each}
+              </div>
             </div>
           </div>
         {/each}
+      </div>
+
+    {:else}
+      <!-- Competencies: fine-grained selection with skill drill-down -->
+      <div class="space-y-2">
+        {#each componentsStore.competencies as comp}
+          {@const selected = isCompetencySelected(comp.id)}
+          {@const covered = isCompetencyCovered(comp.id)}
+          {@const expanded = expandedCompetency === comp.id}
+          {@const detail = componentsStore.competencyDetails[comp.id]}
+          {@const isLoading = componentsStore.loadingCompetencies.has(comp.id)}
+
+          <div class="border rounded-lg transition-colors
+            {covered ? 'border-blue-200 dark:border-blue-800 bg-blue-50/30 dark:bg-blue-900/5 opacity-70' :
+             selected ? 'border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10' :
+             'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800'}">
+
+            <div class="flex items-center gap-3 p-3">
+              <!-- Checkbox (disabled if covered by collection) -->
+              <button
+                onclick={() => !covered && toggleCompetency(comp.id)}
+                disabled={covered}
+                class="flex-shrink-0"
+                aria-label="Select {comp.name}"
+              >
+                <div class="w-5 h-5 rounded border-2 flex items-center justify-center
+                  {covered ? 'border-blue-300 dark:border-blue-600 bg-blue-100 dark:bg-blue-900/30 cursor-not-allowed' :
+                   selected ? 'border-blue-600 bg-blue-600 text-white' :
+                   'border-gray-300 dark:border-gray-600 hover:border-blue-400'}">
+                  {#if covered || selected}
+                    <svg class="w-3 h-3 {covered ? 'text-blue-400' : 'text-white'}" fill="currentColor" viewBox="0 0 20 20">
+                      <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd" />
+                    </svg>
+                  {/if}
+                </div>
+              </button>
+
+              <!-- Name + description -->
+              <div class="flex-1 min-w-0">
+                <p class="font-medium text-sm text-gray-900 dark:text-gray-100">{comp.name}</p>
+                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">{comp.description}</p>
+                {#if covered}
+                  <p class="text-xs text-blue-500 dark:text-blue-400 mt-0.5 italic">Included via collection</p>
+                {/if}
+              </div>
+
+              <!-- Expand toggle -->
+              <button
+                onclick={() => toggleExpand(comp.id, comp.manifestUrl)}
+                class="flex-shrink-0 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 dark:text-gray-500"
+                aria-label="Show skills"
+              >
+                <svg class="w-4 h-4 transition-transform {expanded ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                </svg>
+              </button>
+            </div>
+
+            <!-- Expanded skill list -->
+            {#if expanded}
+              <div class="px-3 pb-3 pt-1 border-t border-gray-100 dark:border-gray-700">
+                {#if isLoading}
+                  <p class="text-xs text-gray-400 dark:text-gray-500 py-2">Loading skills...</p>
+                {:else if detail}
+                  <div class="space-y-2">
+                    {#if detail.skills.length > 0}
+                      <div>
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Skills ({detail.skills.length})</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each detail.skills as skill}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 font-mono">
+                              {skill}
+                            </span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                    {#if detail.powers.length > 0}
+                      <div>
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Powers ({detail.powers.length})</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each detail.powers as power}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 font-mono">
+                              {power}
+                            </span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                    {#if detail.hooks.length > 0}
+                      <div>
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Hooks ({detail.hooks.length})</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each detail.hooks as hook}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 font-mono">
+                              {hook}
+                            </span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                    {#if detail.commands.length > 0}
+                      <div>
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">Commands ({detail.commands.length})</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each detail.commands as cmd}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 font-mono">
+                              {cmd}
+                            </span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                    {#if (detail.mcpServers ?? []).length > 0}
+                      <div>
+                        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1">MCP Servers ({detail.mcpServers.length})</p>
+                        <div class="flex flex-wrap gap-1">
+                          {#each detail.mcpServers as mcp}
+                            <span class="inline-flex items-center px-2 py-0.5 text-xs rounded bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 font-mono">
+                              🔌 {mcp}
+                            </span>
+                          {/each}
+                        </div>
+                      </div>
+                    {/if}
+                  </div>
+                {:else}
+                  <p class="text-xs text-gray-400 dark:text-gray-500 py-2">No detail available</p>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Selection summary -->
+    {#if hasSelection}
+      <div class="rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 p-3 text-xs text-blue-700 dark:text-blue-300">
+        {componentsStore.selectedCount} item(s) selected &mdash;
+        {componentsStore.resolvedCompetencyIds.length} competenc{componentsStore.resolvedCompetencyIds.length === 1 ? 'y' : 'ies'} will be installed
       </div>
     {/if}
   {/if}

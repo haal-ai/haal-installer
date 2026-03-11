@@ -11,9 +11,9 @@
   import { settingsStore } from "./lib/stores/settingsStore.svelte";
 
   interface SelfInstallStatus {
-    is_installed: boolean;
-    home_exists: boolean;
-    needs_update: boolean;
+    isInstalled: boolean;
+    homeExists: boolean;
+    needsUpdate: boolean;
   }
 
   let activeView = $state("wizard");
@@ -30,15 +30,12 @@
     try {
       const status = await invoke<SelfInstallStatus>("check_self_install");
 
-      if (!status.is_installed) {
-        // Not running from ~/.haal/bin/ — need to self-install
+      if (!status.isInstalled) {
         selfInstallNeeded = true;
-        selfInstallNeedsUpdate = status.needs_update;
+        selfInstallNeedsUpdate = status.needsUpdate;
       }
-      // If already installed and up-to-date, proceed normally
     } catch (err) {
       console.error("Self-install check failed:", err);
-      // On error, proceed to normal startup rather than blocking
     } finally {
       selfInstallChecked = true;
     }
