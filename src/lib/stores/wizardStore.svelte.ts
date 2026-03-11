@@ -1,9 +1,20 @@
+import type { ResolvedComponent } from "./componentsStore.svelte";
+
 export type WizardStep = "connect" | "choose" | "preview" | "execute" | "done";
+export type InstallScope = "home" | "repo" | "both";
 
 export interface SelectedComponent {
   id: string;
   name: string;
   targetTools: string[];
+}
+
+export interface InstallRequest {
+  components: ResolvedComponent[];
+  scope: InstallScope;
+  repoPath: string | null;
+  selectedTools: string[];
+  reinstallAll: boolean;
 }
 
 function createWizardStore() {
@@ -12,6 +23,10 @@ function createWizardStore() {
   let destinations = $state<Record<string, string>>({});
   let isExecuting = $state(false);
   let registryUrl = $state<string>("");
+  let reinstallAll = $state(false);
+  let installScope = $state<InstallScope>("home");
+  let repoPath = $state<string>("");
+  let installRequest = $state<InstallRequest | null>(null);
 
   const steps: WizardStep[] = [
     "connect",
@@ -22,54 +37,34 @@ function createWizardStore() {
   ];
 
   return {
-    get currentStep() {
-      return currentStep;
-    },
-    get selectedComponents() {
-      return selectedComponents;
-    },
-    get destinations() {
-      return destinations;
-    },
-    get isExecuting() {
-      return isExecuting;
-    },
-    get registryUrl() {
-      return registryUrl;
-    },
-    get currentStepIndex() {
-      return steps.indexOf(currentStep);
-    },
-    get canGoBack() {
-      return steps.indexOf(currentStep) > 0 && !isExecuting;
-    },
-    get canGoForward() {
-      return steps.indexOf(currentStep) < steps.length - 1 && !isExecuting;
-    },
+    get currentStep() { return currentStep; },
+    get selectedComponents() { return selectedComponents; },
+    get destinations() { return destinations; },
+    get isExecuting() { return isExecuting; },
+    get registryUrl() { return registryUrl; },
+    get reinstallAll() { return reinstallAll; },
+    get installScope() { return installScope; },
+    get repoPath() { return repoPath; },
+    get installRequest() { return installRequest; },
+    get currentStepIndex() { return steps.indexOf(currentStep); },
+    get canGoBack() { return steps.indexOf(currentStep) > 0 && !isExecuting; },
+    get canGoForward() { return steps.indexOf(currentStep) < steps.length - 1 && !isExecuting; },
 
-    setStep(step: WizardStep) {
-      currentStep = step;
-    },
+    setStep(step: WizardStep) { currentStep = step; },
 
     nextStep() {
       const idx = steps.indexOf(currentStep);
-      if (idx < steps.length - 1) {
-        currentStep = steps[idx + 1];
-      }
+      if (idx < steps.length - 1) currentStep = steps[idx + 1];
     },
 
     prevStep() {
       if (!isExecuting) {
         const idx = steps.indexOf(currentStep);
-        if (idx > 0) {
-          currentStep = steps[idx - 1];
-        }
+        if (idx > 0) currentStep = steps[idx - 1];
       }
     },
 
-    setSelectedComponents(components: SelectedComponent[]) {
-      selectedComponents = components;
-    },
+    setSelectedComponents(components: SelectedComponent[]) { selectedComponents = components; },
 
     addComponent(component: SelectedComponent) {
       if (!selectedComponents.find((c) => c.id === component.id)) {
@@ -85,13 +80,12 @@ function createWizardStore() {
       destinations = { ...destinations, [tool]: path };
     },
 
-    setExecuting(value: boolean) {
-      isExecuting = value;
-    },
-
-    setRegistryUrl(url: string) {
-      registryUrl = url;
-    },
+    setExecuting(value: boolean) { isExecuting = value; },
+    setRegistryUrl(url: string) { registryUrl = url; },
+    setReinstallAll(value: boolean) { reinstallAll = value; },
+    setInstallScope(value: InstallScope) { installScope = value; },
+    setRepoPath(value: string) { repoPath = value; },
+    setInstallRequest(req: InstallRequest) { installRequest = req; },
 
     reset() {
       currentStep = "connect";
@@ -99,6 +93,10 @@ function createWizardStore() {
       destinations = {};
       isExecuting = false;
       registryUrl = "";
+      reinstallAll = false;
+      installScope = "home";
+      repoPath = "";
+      installRequest = null;
     },
   };
 }

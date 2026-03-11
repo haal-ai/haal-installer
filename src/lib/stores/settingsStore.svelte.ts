@@ -3,6 +3,9 @@ import { locale } from "svelte-i18n";
 
 export type Theme = "light" | "dark" | "system";
 
+export const SUPPORTED_TOOLS = ["Kiro", "Copilot", "Cursor", "Claude Code", "Windsurf"] as const;
+export type SupportedTool = typeof SUPPORTED_TOOLS[number];
+
 function getSystemTheme(): "light" | "dark" {
   if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -24,6 +27,8 @@ function createSettingsStore() {
   let language = $state<string>("en");
   let autoUpdate = $state(true);
   let parallelOperations = $state(true);
+  // Which tools are enabled for install (all on by default)
+  let enabledTools = $state<Set<SupportedTool>>(new Set(SUPPORTED_TOOLS));
 
   // Apply initial theme
   applyTheme(theme);
@@ -52,6 +57,12 @@ function createSettingsStore() {
     get parallelOperations() {
       return parallelOperations;
     },
+    get enabledTools() {
+      return enabledTools;
+    },
+    isToolEnabled(tool: SupportedTool) {
+      return enabledTools.has(tool);
+    },
     get resolvedTheme(): "light" | "dark" {
       return theme === "system" ? getSystemTheme() : theme;
     },
@@ -78,6 +89,13 @@ function createSettingsStore() {
       this.persistToBackend();
     },
 
+    toggleTool(tool: SupportedTool) {
+      const next = new Set(enabledTools);
+      if (next.has(tool)) next.delete(tool); else next.add(tool);
+      enabledTools = next;
+      this.persistToBackend();
+    },
+
     async persistToBackend() {
       try {
         await invoke("save_config", {
@@ -87,6 +105,7 @@ function createSettingsStore() {
               language,
               auto_update: autoUpdate,
               parallel_operations: parallelOperations,
+              enabled_tools: Array.from(enabledTools),
             },
           },
         });
@@ -103,6 +122,7 @@ function createSettingsStore() {
             language?: string;
             auto_update?: boolean;
             parallel_operations?: boolean;
+            enabled_tools?: string[];
           };
         }>("get_config");
         if (config?.preferences) {
@@ -118,6 +138,13 @@ function createSettingsStore() {
           if (p.auto_update !== undefined) autoUpdate = p.auto_update;
           if (p.parallel_operations !== undefined)
             parallelOperations = p.parallel_operations;
+          if (p.enabled_tools) {
+            enabledTools = new Set(
+              (p.enabled_tools as string[]).filter((t): t is SupportedTool =>
+                (SUPPORTED_TOOLS as readonly string[]).includes(t)
+              )
+            );
+          }
         }
       } catch {
         // Backend not available yet — use defaults
