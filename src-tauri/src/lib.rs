@@ -2,14 +2,18 @@ pub mod adapters;
 pub mod checksum_validator;
 pub mod config_manager;
 pub mod conflict_detector;
-pub mod errors;
+pub mod content_hasher;
+pub mod destination_resolver;
+pub mod requirement_checker;pub mod errors;
 pub mod github_auth;
+pub mod installer;
 pub mod logging;
 pub mod manifest_parser;
 pub mod models;
 pub mod offline_detector;
 pub mod operation_engine;
 pub mod registry_manager;
+pub mod repo_manager;
 pub mod rollback_manager;
 pub mod self_installer;
 pub mod tool_detector;
@@ -28,10 +32,11 @@ use checksum_validator::ChecksumValidator;
 use conflict_detector::{ConflictDetector, ConflictType};
 use github_auth::{GitHubAuthenticator, GitHubCredentials};
 use config_manager::ConfigurationManager;
-use models::{Component, ConfigurationProfile, Destination, OperationResult, UserPreferences};
-use offline_detector::OfflineDetector;
+use installer::Installer;
+use models::{CompetencyDetail, CompetencyEntry, HaalManifest, Component, ConfigurationProfile, Destination, InstallRequest, InstallResult, MergedCatalog, OperationResult, UserPreferences};
+use repo_manager::RepoManager;use offline_detector::OfflineDetector;
 use operation_engine::OperationEngine;
-use registry_manager::{MasterManifest, RegistryManager, RepoManifest, DEFAULT_REGISTRY_URL};
+use registry_manager::{RegistryManager, DEFAULT_REGISTRY_URL};
 use rollback_manager::RollbackManager;
 use self_installer::SelfInstaller;
 use serde::Serialize;
@@ -41,6 +46,7 @@ use version_tracker::{UpdateInfo, VersionTracker};
 
 /// JSON-serializable status returned by the `check_self_install` command.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SelfInstallStatus {
     pub is_installed: bool,
     pub home_exists: bool,
@@ -289,54 +295,65 @@ async fn check_network_status() -> Result<bool, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Fetches the master manifest from the HAAL registry.
+/// Fetches the top-level HAAL manifest (collections + competency stubs).
 /// Falls back to cached version if the registry is unreachable.
 #[tauri::command]
-async fn fetch_registry() -> Result<MasterManifest, String> {
-    let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
-    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
-    manager
-        .fetch_master_manifest()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Fetches a repo manifest from a specific repository URL.
-#[tauri::command]
-async fn fetch_repo_manifest(repo_url: String, repo_id: String) -> Result<RepoManifest, String> {
-    let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
-    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
-    manager
-        .fetch_repo_manifest(&repo_url, &repo_id)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// Discovers all available components from all enabled repositories,
-/// resolving duplicates by priority and respecting pinned components.
-/// If `registry_url` is provided, uses that instead of the default registry.
-#[tauri::command]
-async fn discover_components(registry_url: Option<String>) -> Result<Vec<Component>, String> {
+async fn fetch_registry(registry_url: Option<String>) -> Result<HaalManifest, String> {
     let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
     let url = registry_url
         .filter(|u| !u.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_REGISTRY_URL.to_string());
     let manager = RegistryManager::new(url, cache_dir);
+    manager.fetch_manifest().await.map_err(|e| e.to_string())
+}
+
+/// Fetches the full detail for a single competency (skills, powers, hooks, commands).
+/// Tries the local cloned repo cache first (fast, no network).
+/// Falls back to remote fetch only if the local file is missing.
+#[tauri::command]
+async fn fetch_competency(
+    competency_id: String,
+    manifest_url: String,
+    base_url: String,
+) -> Result<CompetencyDetail, String> {
+    // Try local repo cache first — base_url may be a local path from MergedCatalog
+    // competencySources (absolute path to the cloned repo root).
+    let local_path = {
+        // competencySources gives us the repo root; manifest_url is e.g. "competencies/developer.json"
+        let candidate = std::path::PathBuf::from(&base_url).join(&manifest_url);
+        if candidate.exists() { Some(candidate) } else { None }
+    };
+
+    if let Some(path) = local_path {
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+        return serde_json::from_str::<CompetencyDetail>(&content)
+            .map_err(|e| format!("Cannot parse {}: {e}", path.display()));
+    }
+
+    // Fall back to remote fetch (base_url is an HTTP base URL)
+    let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
+    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
+    let entry = CompetencyEntry {
+        id: competency_id,
+        name: String::new(),
+        description: String::new(),
+        manifest_url,
+    };
     manager
-        .discover_all_components()
+        .fetch_competency(&entry, &base_url)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// Refreshes all cached manifests (master + all enabled repo manifests).
+/// Reads an MCP server definition from a locally cloned registry repo.
+/// `source_path` is the absolute path to `mcpservers/<id>/` in the cache.
 #[tauri::command]
-async fn refresh_manifests() -> Result<(), String> {
-    let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
-    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
-    manager
-        .refresh_all_manifests()
-        .await
-        .map_err(|e| e.to_string())
+fn read_mcp_server_def(source_path: String) -> Result<models::McpServerDef, String> {
+    let path = std::path::PathBuf::from(&source_path).join("mcp.json");
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+    serde_json::from_str(&content).map_err(|e| format!("Cannot parse mcp.json: {e}"))
 }
 
 /// Detects all supported AI coding tools installed on the system.
@@ -363,17 +380,371 @@ async fn check_updates() -> Result<Vec<UpdateInfo>, String> {
     let tracker = VersionTracker::new(metadata_path);
     tracker.load().map_err(|e| e.to_string())?;
 
-    let cache_dir = SelfInstaller::haal_home().join("cache").join("manifests");
-    let manager = RegistryManager::new(DEFAULT_REGISTRY_URL.to_string(), cache_dir);
-    let repo_components = manager
-        .discover_all_components()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(tracker.check_updates(&repo_components))
+    // No flat component list anymore — return empty until version tracking
+    // is wired to the new competency-based model.
+    Ok(tracker.check_updates(&[]))
 }
 
-/// Builds an `OperationEngine` with all tool adapters and shared services.
+/// Returns the resolved install paths for skills and powers on this machine.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInstallPath {
+    pub tool: String,
+    pub skills_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallPaths {
+    pub tool_paths: Vec<ToolInstallPath>,
+    pub powers_path: String,
+}
+
+#[tauri::command]
+fn get_current_dir() -> String {
+    std::env::current_dir()
+        .unwrap_or_default()
+        .display()
+        .to_string()
+}
+
+/// Returns Ok(path) if the folder contains a .git directory, Err otherwise.
+#[tauri::command]
+fn validate_git_repo(path: String) -> Result<String, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Folder does not exist: {}", path));
+    }
+    if p.join(".git").exists() {
+        Ok(path)
+    } else {
+        Err("No .git directory found. Please select a git repository.".to_string())
+    }
+}
+
+#[tauri::command]
+fn get_install_paths() -> InstallPaths {
+    let home = dirs::home_dir().unwrap_or_default();
+    let powers_path = home.join(".kiro").join("powers").join("installed").display().to_string();
+
+    let adapters: Vec<(&str, Box<dyn crate::traits::ToolAdapter>)> = vec![
+        ("Kiro",        Box::new(KiroAdapter::new())),
+        ("Cursor",      Box::new(CursorAdapter::new())),
+        ("Claude Code", Box::new(ClaudeCodeAdapter::new())),
+        ("Windsurf",    Box::new(WindsurfAdapter::new())),
+        ("Copilot",     Box::new(CopilotAdapter::new())),
+    ];
+
+    let tool_paths = adapters.into_iter()
+        .filter(|(_, a)| a.detect_installation().ok().flatten().is_some())
+        .filter_map(|(name, a)| {
+            // Use the first default destination path for display
+            a.default_destinations().into_iter().next().map(|d| ToolInstallPath {
+                tool: name.to_string(),
+                skills_path: d.path.display().to_string(),
+            })
+        })
+        .collect();
+
+    InstallPaths { tool_paths, powers_path }
+}
+
+/// Scans installed skills for each detected tool
+/// and returns which skill IDs are already present on disk.
+/// Returns a map of { tool_name -> [skill_id, ...] }
+#[tauri::command]
+fn scan_installed() -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    scan_skills_at_base(None)
+}
+
+/// Scans installed skills at a specific base path (e.g. a repo root).
+/// Looks for `<base>/.kiro/skills/` instead of the tool's default destinations.
+#[tauri::command]
+fn scan_installed_at(base_path: String) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    scan_skills_at_base(Some(std::path::PathBuf::from(base_path)))
+}
+
+fn scan_skills_at_base(base: Option<std::path::PathBuf>) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    use std::collections::HashMap;
+
+    let mut result: HashMap<String, Vec<String>> = HashMap::new();
+
+    if let Some(base_path) = base {
+        // Repo-scoped scan: look in <base>/.kiro/skills/
+        let skills_dir = base_path.join(".kiro").join("skills");
+        let skill_ids = scan_skills_dir(&skills_dir);
+        if !skill_ids.is_empty() {
+            result.insert("repo".to_string(), skill_ids);
+        }
+        return Ok(result);
+    }
+
+    // Home scan: use each tool adapter's default destinations
+    let adapters: Vec<(&str, Box<dyn crate::traits::ToolAdapter>)> = vec![
+        ("kiro",        Box::new(KiroAdapter::new())),
+        ("cursor",      Box::new(CursorAdapter::new())),
+        ("claude-code", Box::new(ClaudeCodeAdapter::new())),
+        ("windsurf",    Box::new(WindsurfAdapter::new())),
+        ("copilot",     Box::new(CopilotAdapter::new())),
+    ];
+
+    for (key, adapter) in &adapters {
+        if adapter.detect_installation().ok().flatten().is_none() {
+            continue;
+        }
+        let mut skill_ids: Vec<String> = Vec::new();
+        for dest in adapter.default_destinations() {
+            skill_ids.extend(scan_skills_dir(&dest.path));
+        }
+        skill_ids.sort();
+        skill_ids.dedup();
+        if !skill_ids.is_empty() {
+            result.insert(key.to_string(), skill_ids);
+        }
+    }
+
+    Ok(result)
+}
+
+fn scan_skills_dir(path: &std::path::Path) -> Vec<String> {
+    if !path.exists() { return vec![]; }
+    let mut ids = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join("skill.md").exists() {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    ids.push(name.to_string());
+                }
+            } else if p.is_file() && p.extension().map(|e| e == "md").unwrap_or(false) {
+                if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
+                    ids.push(stem.to_string());
+                }
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Scans installed Kiro Powers under ~/.kiro/powers/installed/.
+/// Returns list of power IDs found on disk.
+#[tauri::command]
+fn scan_installed_powers() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else { return vec![] };
+    let powers_dir = home.join(".kiro").join("powers").join("installed");
+    if !powers_dir.exists() {
+        return vec![];
+    }
+    let mut powers: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&powers_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    powers.push(name.to_string());
+                }
+            }
+        }
+    }
+    powers.sort();
+    powers
+}
+// ---------------------------------------------------------------------------
+// Install status with update detection
+// ---------------------------------------------------------------------------
+
+/// Status of a single installed item compared to the registry cache.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemStatus {
+    pub id: String,
+    /// "new" | "up-to-date" | "outdated"
+    pub status: String,
+}
+
+/// Scans installed skills/powers and compares them against the registry cache
+/// to detect outdated items.
+/// Returns per-item status for skills and powers.
+/// Only checks items in `component_ids` — avoids hashing the entire registry.
+#[tauri::command]
+fn scan_installed_with_status(
+    catalog_sources: std::collections::HashMap<String, String>,
+    component_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, Vec<ItemStatus>>, String> {
+    use content_hasher::hash_path;
+    use std::collections::HashMap;
+
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut result: HashMap<String, Vec<ItemStatus>> = HashMap::new();
+
+    let ids_set: std::collections::HashSet<&str> = component_ids.iter().map(|s| s.as_str()).collect();
+
+    // Collect all unique registry source paths
+    let registry_paths: Vec<std::path::PathBuf> = catalog_sources
+        .values()
+        .map(|p| std::path::PathBuf::from(p))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Build id→registry_hash only for the requested IDs
+    let registry_hashes = |subdir: &str| -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        for reg_path in &registry_paths {
+            let dir = reg_path.join(subdir);
+            if !dir.exists() { continue; }
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    let id = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                    if id.is_empty() || !ids_set.contains(id.as_str()) { continue; }
+                    if let Some(h) = hash_path(&p) {
+                        map.insert(id, h);
+                    }
+                }
+            }
+        }
+        map
+    };
+
+    // --- Skills ---
+    let skill_reg = registry_hashes("skills");
+    let skill_install_dirs: Vec<(&str, std::path::PathBuf)> = vec![
+        ("kiro",        home.join(".kiro").join("skills")),
+        ("claude-code", home.join(".claude").join("skills")),
+        ("cursor",      home.join(".cursor").join("skills")),
+        ("windsurf",    home.join(".windsurf").join("extensions")),
+    ];
+    for (tool, dir) in &skill_install_dirs {
+        if !dir.exists() { continue; }
+        let mut statuses: Vec<ItemStatus> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let id = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                // Only check selected skills
+                if id.is_empty() || !ids_set.contains(id.as_str()) { continue; }
+                let status = match (hash_path(&p), skill_reg.get(&id)) {
+                    (Some(installed), Some(registry)) => {
+                        if installed == *registry { "up-to-date" } else { "outdated" }
+                    }
+                    (Some(_), None) => "up-to-date",
+                    (None, _) => continue,
+                };
+                statuses.push(ItemStatus { id, status: status.to_string() });
+            }
+        }
+        if !statuses.is_empty() {
+            result.insert(tool.to_string(), statuses);
+        }
+    }
+
+    // --- Powers ---
+    let power_reg = registry_hashes("powers");
+    let powers_dir = home.join(".kiro").join("powers").join("installed");
+    if powers_dir.exists() {
+        let mut statuses: Vec<ItemStatus> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&powers_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let id = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+                if id.is_empty() || !ids_set.contains(id.as_str()) { continue; }
+                let status = match (hash_path(&p), power_reg.get(&id)) {
+                    (Some(installed), Some(registry)) => {
+                        if installed == *registry { "up-to-date" } else { "outdated" }
+                    }
+                    (Some(_), None) => "up-to-date",
+                    (None, _) => continue,
+                };
+                statuses.push(ItemStatus { id, status: status.to_string() });
+            }
+        }
+        if !statuses.is_empty() {
+            result.insert("powers".to_string(), statuses);
+        }
+    }
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Requirement checking
+// ---------------------------------------------------------------------------
+
+/// Reads `haal.json` sidecars for a list of resolved components and checks
+/// all declared runtime/MCP requirements against the local system.
+/// `mcp_being_installed` is the list of MCP server IDs selected in this session
+/// so we can mark them as "provided" rather than "missing".
+#[tauri::command]
+fn check_requirements(
+    components: Vec<models::ResolvedComponent>,
+    mcp_being_installed: Vec<String>,
+) -> Vec<requirement_checker::ComponentRequirements> {
+    components.iter().filter_map(|comp| {
+        let source = std::path::PathBuf::from(&comp.source_path);
+        let type_str = format!("{:?}", comp.component_type).to_lowercase();
+        requirement_checker::check_component(
+            &comp.id,
+            &type_str,
+            &source,
+            &mcp_being_installed,
+        )
+    }).collect()
+}
+
+/// Initializes the multi-registry catalog:/// 1. Clones/pulls the seed repo
+/// 2. Reads repos-manifest.json from the seed to find additional repos
+/// 3. Clones/pulls each additional repo (lower priority)
+/// 4. Merges all catalogs — seed wins on conflict
+/// Returns the merged catalog for the frontend to display.
+#[tauri::command]
+async fn initialize_catalog(seed_url: Option<String>) -> Result<MergedCatalog, String> {
+    let url = seed_url
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| registry_manager::DEFAULT_REGISTRY_URL.to_string());
+
+    // Derive the seed repo slug from the URL
+    // e.g. "https://raw.githubusercontent.com/haal-ai/haal-skills/main/haal_manifest.json"
+    //   → repo = "haal-ai/haal-skills", branch = "main"
+    let (repo, branch) = parse_github_raw_url(&url)
+        .unwrap_or_else(|| ("haal-ai/haal-skills".to_string(), "main".to_string()));
+
+    let cache_root = SelfInstaller::haal_home().join("cache").join("repos");
+    let manager = RepoManager::new(cache_root);
+
+    let seed_path = manager.clone_or_pull(&repo, &branch, None)
+        .map_err(|e| e.to_string())?;
+
+    manager.build_merged_catalog(&seed_path)
+        .map_err(|e| e.to_string())
+}
+
+/// Parses a GitHub raw URL to extract (owner/repo, branch).
+fn parse_github_raw_url(url: &str) -> Option<(String, String)> {
+    // https://raw.githubusercontent.com/<owner>/<repo>/<branch>/...
+    let stripped = url.strip_prefix("https://raw.githubusercontent.com/")?;
+    let parts: Vec<&str> = stripped.splitn(4, '/').collect();
+    if parts.len() >= 3 {
+        Some((format!("{}/{}", parts[0], parts[1]), parts[2].to_string()))
+    } else {
+        None
+    }
+}
+
+/// Installs components using the new multi-registry install engine.
+/// Accepts a full `InstallRequest` built by the frontend from the merged catalog.
+#[tauri::command]
+async fn install_components_v2(
+    app: tauri::AppHandle,
+    request: InstallRequest,
+) -> Result<InstallResult, String> {
+    let installer = Installer::new(app, request.reinstall_all);
+    Ok(installer.install(&request).await)
+}
+
+
 fn build_operation_engine() -> OperationEngine {
     let mut tool_adapters: HashMap<String, Box<dyn crate::traits::ToolAdapter>> = HashMap::new();
     tool_adapters.insert("copilot".to_string(), Box::new(CopilotAdapter::new()));
@@ -573,6 +944,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -590,9 +962,13 @@ pub fn run() {
             get_stored_credentials,
             check_network_status,
             fetch_registry,
-            fetch_repo_manifest,
-            discover_components,
-            refresh_manifests,
+            fetch_competency,
+            scan_installed,
+            scan_installed_at,
+            scan_installed_powers,
+            get_install_paths,
+            get_current_dir,
+            validate_git_repo,
             detect_tools,
             check_updates,
             install_components,
@@ -605,7 +981,12 @@ pub fn run() {
             get_config,
             save_config,
             read_logs,
-            export_logs
+            export_logs,
+            initialize_catalog,
+            install_components_v2,
+            read_mcp_server_def,
+            scan_installed_with_status,
+            check_requirements
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

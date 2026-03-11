@@ -1,8 +1,169 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Represents an installable item (skill, extension, plugin, configuration).
+// ---------------------------------------------------------------------------
+// Registry manifest types
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HaalManifest {
+    pub version: String,
+    pub repo_id: String,
+    pub description: String,
+    pub base_url: String,
+    pub collections: Vec<CollectionEntry>,
+    pub competencies: Vec<CompetencyEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub competency_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompetencyEntry {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub manifest_url: String,
+}
+
+/// Full competency detail — all component IDs grouped by type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompetencyDetail {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub powers: Vec<String>,
+    #[serde(default)]
+    pub hooks: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// MCP server definition (stored in registry as mcpservers/<id>/mcp.json)
+// ---------------------------------------------------------------------------
+
+/// Transport type for an MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum McpTransport {
+    /// Remote/cloud — just a URL, nothing to install locally.
+    Http,
+    /// Local stdio process — needs a runtime (npx, uvx, binary).
+    Stdio,
+}
+
+/// Full MCP server definition loaded from the registry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerDef {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub transport: McpTransport,
+    /// For Http transport: the remote URL.
+    #[serde(default)]
+    pub server_url: Option<String>,
+    /// For Stdio transport: the command to run (e.g. "uvx", "npx").
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Args passed to the command.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Environment variables to inject.
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Which scopes are meaningful: "user" | "workspace"
+    #[serde(default)]
+    pub scope: Vec<String>,
+}
+
+/// Legacy manifest kept for adapter compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub version: String,
+    pub components: Vec<Component>,
+    pub collections: Vec<CollectionEntry>,
+    pub competencies: Vec<CompetencyEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// Multi-registry catalog
+// ---------------------------------------------------------------------------
+
+/// A single cloned registry repo with its resolved local path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoSource {
+    /// e.g. "haal-ai/haal-skills:main"
+    pub repo_spec: String,
+    /// Local path to the cloned repo.
+    pub local_path: PathBuf,
+    /// Priority — higher wins on conflict (seed = highest).
+    pub priority: u32,
+}
+
+/// The merged catalog built from all cloned repos.
+/// Higher-priority repos win on duplicate competency/collection IDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergedCatalog {
+    pub collections: Vec<CollectionEntry>,
+    pub competencies: Vec<CompetencyEntry>,
+    /// Maps competency_id → source repo local path (for install-time resolution).
+    pub competency_sources: std::collections::HashMap<String, PathBuf>,
+}
+
+// ---------------------------------------------------------------------------
+// Component types
+// ---------------------------------------------------------------------------
+
+/// Tool-agnostic component type. The installer adapter maps each type
+/// to the correct destination path(s) per tool.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum ComponentType {
+    Skill,
+    Power,
+    Rule,
+    Hook,
+    Command,
+    Agent,
+    OlafData,
+    Package,
+    McpServer,
+}
+
+/// A resolved, installable component with its source path in the local cache.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedComponent {
+    pub id: String,
+    pub component_type: ComponentType,
+    /// Absolute path to the component folder/file in the cloned repo cache.
+    pub source_path: PathBuf,
+}
+
+/// Legacy component kept for adapter compatibility.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Component {
     pub id: String,
     pub name: String,
@@ -10,52 +171,67 @@ pub struct Component {
     pub component_type: ComponentType,
     pub path: String,
     pub compatible_tools: Vec<String>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
+    #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
     pub deprecated: bool,
-    /// Git commit hash tracking the component version in the repository.
     #[serde(default)]
     pub version: Option<String>,
 }
 
-/// The type of a component.
+// ---------------------------------------------------------------------------
+// Install request / result
+// ---------------------------------------------------------------------------
+
+/// Scope of installation chosen by the user.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ComponentType {
-    Skill,
-    Extension,
-    Plugin,
-    Configuration,
+#[serde(rename_all = "camelCase")]
+pub enum InstallScope {
+    /// Install to home/global tool directories only.
+    Home,
+    /// Install to the specified repo directory only.
+    Repo,
+    /// Install to both home and repo.
+    Both,
 }
 
-/// A parsed manifest from a repository.
+/// Full install request passed from the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Manifest {
-    pub version: String,
-    pub components: Vec<Component>,
-    pub collections: Vec<Collection>,
-    pub competencies: Vec<Competency>,
+#[serde(rename_all = "camelCase")]
+pub struct InstallRequest {
+    /// Resolved components to install.
+    pub components: Vec<ResolvedComponent>,
+    pub scope: InstallScope,
+    /// Absolute path to the target repo (required for Repo/Both scope).
+    pub repo_path: Option<PathBuf>,
+    /// Which tools to install to (e.g. ["Kiro", "Cursor"]).
+    pub selected_tools: Vec<String>,
+    /// If true, overwrite existing; if false, skip existing.
+    pub reinstall_all: bool,
 }
 
-/// A named group of related components.
+/// Result of the install operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Collection {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub component_ids: Vec<String>,
+#[serde(rename_all = "camelCase")]
+pub struct InstallResult {
+    pub success: bool,
+    pub components_succeeded: Vec<String>,
+    pub components_failed: Vec<ComponentFailure>,
 }
 
-/// A specialized collection with specific capabilities and config files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Competency {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub component_ids: Vec<String>,
-    pub config_files: Vec<String>,
+#[serde(rename_all = "camelCase")]
+pub struct ComponentFailure {
+    pub component_id: String,
+    pub error: String,
 }
 
-/// A file-system destination where components are installed.
+// ---------------------------------------------------------------------------
+// Legacy operation types (kept for existing commands)
+// ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Destination {
     pub tool_name: String,
@@ -63,7 +239,6 @@ pub struct Destination {
     pub enabled: bool,
 }
 
-/// The result of an install/update/delete/reinitialize operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationResult {
     pub success: bool,
@@ -72,14 +247,6 @@ pub struct OperationResult {
     pub rollback_performed: bool,
 }
 
-/// Details about a single component that failed during an operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ComponentFailure {
-    pub component_id: String,
-    pub error: String,
-}
-
-/// An exportable/importable set of installation preferences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigurationProfile {
     pub repositories: Vec<String>,
@@ -88,7 +255,6 @@ pub struct ConfigurationProfile {
     pub preferences: UserPreferences,
 }
 
-/// User-level preferences persisted across sessions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserPreferences {
     pub theme: Theme,
@@ -97,16 +263,8 @@ pub struct UserPreferences {
     pub parallel_operations: bool,
 }
 
-/// UI theme.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Theme {
-    Dark,
-    Light,
-}
+pub enum Theme { Dark, Light }
 
-/// Supported UI languages.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Language {
-    English,
-    French,
-}
+pub enum Language { English, French }
