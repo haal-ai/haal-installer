@@ -27,17 +27,13 @@ impl ToolDetector {
         let mut detected = Vec::new();
 
         for adapter in &self.adapters {
-            if adapter.is_installed() {
-                let destinations = adapter.default_destinations();
-                let path = destinations
-                    .first()
-                    .map(|d| d.path.display().to_string())
-                    .unwrap_or_default();
+            if let Ok(Some(path)) = adapter.detect_installation() {
+                let version = adapter.detect_version().ok().flatten();
 
                 detected.push(DetectedTool {
                     name: adapter.tool_name().to_string(),
-                    version: None, // Version detection can be added later
-                    path,
+                    version,
+                    path: path.display().to_string(),
                     is_installed: true,
                 });
             }
