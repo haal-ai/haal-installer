@@ -5,6 +5,7 @@
   import Sidebar from "./lib/components/Sidebar.svelte";
   import WizardFlow from "./lib/components/WizardFlow.svelte";
   import SettingsPanel from "./lib/components/SettingsPanel.svelte";
+  import SystemsStep from "./lib/components/SystemsStep.svelte";
   import LogViewer from "./lib/components/LogViewer.svelte";
   import SelfInstallDialog from "./lib/components/SelfInstallDialog.svelte";
   import UpdateNotification from "./lib/components/UpdateNotification.svelte";
@@ -72,6 +73,8 @@
         </div>
       {:else if activeView === "wizard"}
         <WizardFlow />
+      {:else if activeView === "systems"}
+        <SystemsStep />
       {:else if activeView === "settings"}
         <SettingsPanel />
       {:else if activeView === "logs"}

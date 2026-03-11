@@ -9,9 +9,10 @@
   let { activeView, onNavigate }: Props = $props();
 
   const navItems = [
-    { id: "wizard", icon: "wand", labelKey: "nav.wizard" },
-    { id: "settings", icon: "cog", labelKey: "nav.settings" },
-    { id: "logs", icon: "document", labelKey: "nav.logs" },
+    { id: "wizard",  icon: "wand",   labelKey: "nav.wizard" },
+    { id: "systems", icon: "rocket", labelKey: "nav.systems" },
+    { id: "settings",icon: "cog",    labelKey: "nav.settings" },
+    { id: "logs",    icon: "document",labelKey: "nav.logs" },
   ] as const;
 </script>
 
@@ -40,6 +41,11 @@
               stroke-width="2"
               d="M13 10V3L4 14h7v7l9-11h-7z"
             />
+          </svg>
+        {:else if item.icon === "rocket"}
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
         {:else if item.icon === "cog"}
           <svg

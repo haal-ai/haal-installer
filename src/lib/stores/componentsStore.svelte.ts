@@ -53,6 +53,17 @@ export interface MergedCatalog {
   competencies: CompetencyEntry[];
   /** competency_id → local path of the source repo */
   competencySources: Record<string, string>;
+  /** Agentic systems from all registries */
+  systems: SystemEntry[];
+}
+
+export interface SystemEntry {
+  id: string;
+  name: string;
+  description: string;
+  repo: string;
+  branch?: string;
+  tags: string[];
 }
 
 /** A resolved component ready for install */
