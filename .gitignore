@@ -6,6 +6,7 @@ dist/
 
 # Tauri build output
 src-tauri/target/
+src-tauri/gen/
 
 # Environment
 .env

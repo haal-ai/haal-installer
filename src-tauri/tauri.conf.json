@@ -38,7 +38,7 @@
     ],
     "windows": {
       "wix": {
-        "upgradeCode": "00000000-0000-0000-0000-000000000000",
+        "upgradeCode": "48ffcc96-1ef2-40a2-b5aa-cfea4f242cb0",
         "language": "en-US"
       },
       "nsis": {
