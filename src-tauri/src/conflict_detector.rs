@@ -126,3 +126,4 @@ impl ConflictDetector {
 
         Ok(conflicts)
     }
+}
