@@ -6,6 +6,19 @@
 
 A cross-platform desktop application for installing, updating, and managing AI coding tool components (skills, prompts, rules, commands, MCP servers, agentic systems) across tools like GitHub Copilot, Cursor, Claude Code, Kiro, and Windsurf.
 
+## Download
+
+Pre-built installers are published on the [GitHub Releases page](https://github.com/haal-ai/haal-installer/releases).
+
+| Platform | File |
+|---|---|
+| Windows | `.msi` or `.exe` (NSIS) |
+| macOS (Apple Silicon) | `.dmg` (aarch64) |
+| macOS (Intel) | `.dmg` (x86_64) |
+| Linux | `.deb` or `.AppImage` |
+
+Download the file for your platform, run it, and follow the installer prompts. On first launch the app copies itself to `~/.haal/bin/` and adds that directory to your PATH so you can run `haal-installer` from any terminal.
+
 ## What it does
 
 Instead of manually cloning repos and copying files, HAAL Installer gives you a guided wizard that handles the full lifecycle:

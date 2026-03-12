@@ -224,9 +224,87 @@ impl SelfInstaller {
         Ok(())
     }
 
-    /// Adds ~/.haal/bin/ to the system PATH.
+    /// Adds ~/.haal/bin/ to the system PATH permanently.
+    ///
+    /// - macOS/Linux: appends an export line to ~/.zshrc, ~/.bashrc, ~/.profile
+    /// - Windows: adds the directory to the user-level PATH registry key via `setx`
     pub fn add_to_path(&self) -> Result<(), HaalError> {
-        // Placeholder — platform-specific implementation needed
+        let bin_dir = self.haal_home.join("bin");
+        let bin_str = bin_dir.to_string_lossy().into_owned();
+
+        #[cfg(windows)]
+        {
+            // Read current user PATH from registry
+            let output = Command::new("powershell")
+                .args([
+                    "-NoProfile", "-Command",
+                    "[System.Environment]::GetEnvironmentVariable('PATH','User')",
+                ])
+                .output()
+                .map_err(|e| HaalError::FileSystem(FileSystemError {
+                    message: format!("Failed to read PATH: {e}"),
+                    path: None,
+                }))?;
+
+            let current = String::from_utf8_lossy(&output.stdout);
+            let current = current.trim();
+
+            // Only add if not already present
+            if !current.split(';').any(|p| p.trim().eq_ignore_ascii_case(&bin_str)) {
+                let new_path = if current.is_empty() {
+                    bin_str.clone()
+                } else {
+                    format!("{current};{bin_str}")
+                };
+                Command::new("powershell")
+                    .args([
+                        "-NoProfile", "-Command",
+                        &format!(
+                            "[System.Environment]::SetEnvironmentVariable('PATH','{new_path}','User')"
+                        ),
+                    ])
+                    .status()
+                    .map_err(|e| HaalError::FileSystem(FileSystemError {
+                        message: format!("Failed to set PATH: {e}"),
+                        path: None,
+                    }))?;
+            }
+        }
+
+        #[cfg(unix)]
+        {
+            let export_line = format!("\nexport PATH=\"{bin_str}:$PATH\"\n");
+            let marker = format!("# haal-installer managed path: {bin_str}");
+
+            // Shell rc files to update
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let candidates = [
+                format!("{home}/.zshrc"),
+                format!("{home}/.bashrc"),
+                format!("{home}/.profile"),
+            ];
+
+            for rc in &candidates {
+                let path = std::path::Path::new(rc);
+                // Only update files that exist
+                if !path.exists() {
+                    continue;
+                }
+                let content = fs::read_to_string(path).unwrap_or_default();
+                // Skip if already added
+                if content.contains(&marker) {
+                    continue;
+                }
+                let addition = format!("{marker}{export_line}");
+                fs::write(path, format!("{content}{addition}")).map_err(|e| {
+                    HaalError::FileSystem(FileSystemError {
+                        message: format!("Failed to update {rc}: {e}"),
+                        path: Some(rc.clone()),
+                    })
+                })?;
+            }
+        }
+
         Ok(())
     }
 
