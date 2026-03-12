@@ -9,8 +9,6 @@ pub enum InstallOp {
     CopyDir { src: PathBuf, dest: PathBuf },
     /// Copy a single file (rules, hooks, commands).
     CopyFile { src: PathBuf, dest: PathBuf },
-    /// Copy a file and prepend frontmatter text before the content.
-    InjectFrontmatter { src: PathBuf, dest: PathBuf, frontmatter: String },
     /// Append text content to a file (global rules files like CLAUDE.md, AGENTS.md).
     AppendFile { src: PathBuf, dest: PathBuf },
     /// Merge an mcpServers entry into a JSON config file.
@@ -175,200 +173,148 @@ impl DestinationResolver {
     // Rules
     //
     // Source layout: rules/<subfolder>/<id>/rule.md
-    //   subfolder = common | kiro | cursor | copilot | windsurf | claude
+    //   subfolder = kiro | cursor | copilot | windsurf | claude
     //
-    // Override precedence: tool-specific subfolder wins over common for that tool.
-    // For common/, the installer injects the correct frontmatter per tool.
+    // No common/ subfolder — each tool variant is authored in the registry
+    // with the correct frontmatter already baked in. Unknown subfolders are skipped.
     //
-    // common → deploys to ALL tools with injected frontmatter:
-    //   kiro     → ~/.kiro/steering/<id>.md          frontmatter: inclusion: always
-    //   cursor   → ~/.cursor/rules/<id>.mdc           frontmatter: description/globs/alwaysApply
-    //   copilot  → <repo>/.github/instructions/<id>.instructions.md  frontmatter: applyTo: "**"
-    //   windsurf → home: append global_rules.md (no frontmatter)
-    //              repo: <repo>/.windsurf/rules/<id>.md (no frontmatter)
-    //   claude   → home: append ~/.claude/CLAUDE.md (no frontmatter)
-    //
-    // kiro     → ~/.kiro/steering/<id>.md  (file already has correct frontmatter)
-    // cursor   → ~/.cursor/rules/<id>.mdc  (file already has correct frontmatter)
-    // copilot  → <repo>/.github/instructions/<id>.instructions.md (already has applyTo)
-    // windsurf → home: append global_rules.md | repo: .windsurf/rules/<id>.md
-    // claude   → home: append CLAUDE.md | repo: append AGENTS.md
+    // kiro     → home: ~/.kiro/steering/<id>.md
+    //            repo: <repo>/.kiro/steering/<id>.md
+    // cursor   → home: ~/.cursor/rules/<id>.mdc
+    //            repo: <repo>/.cursor/rules/<id>.mdc
+    // copilot  → home: ~/.copilot/instructions/<id>.instructions.md  (VS Code user-level)
+    //            repo: <repo>/.github/instructions/<id>.instructions.md
+    // windsurf → home: append ~/.codeium/windsurf/global_rules.md
+    //            repo: <repo>/.windsurf/rules/<id>.md
+    // claude   → home: append ~/.claude/CLAUDE.md
+    //            repo: append <repo>/AGENTS.md
     // -----------------------------------------------------------------------
 
     fn resolve_rule(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
-        let mut actions = Vec::new();
-        let id = &comp.id;
-        let subfolder = self.detect_subfolder(&comp.source_path, "rules");
-        // The actual markdown file inside the component folder
-        let src = &comp.source_path.join("rule.md");
+            let mut actions = Vec::new();
+            let id = &comp.id;
+            // source_path is the rule file itself (any .md filename)
+            let src = &comp.source_path;
 
-        match subfolder.as_deref() {
-            // ── common: deploy to all tools, inject frontmatter ──────────────
-            Some("common") | None => {
-                // Kiro: inject "inclusion: always" frontmatter
-                let kiro_fm = "---\ninclusion: always\n---\n";
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_with_frontmatter(id, src,
-                        self.home_dir.join(".kiro").join("steering").join(format!("{id}.md")),
-                        kiro_fm));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_with_frontmatter(id, src,
-                            repo.join(".kiro").join("steering").join(format!("{id}.md")),
-                            kiro_fm));
-                    }
-                }
+            // Registry layout: rules/<scope>/<tool>/file.md
+            //   scope = global | repo
+            //   tool  = kiro | cursor | copilot | windsurf | claude
+            let (scope_folder, tool_folder) = self.detect_two_subfolders(src, "rules");
+            let is_global = scope_folder.as_deref() == Some("global");
+            let is_repo   = scope_folder.as_deref() == Some("repo");
 
-                // Cursor: inject alwaysApply frontmatter
-                let cursor_fm = "---\ndescription: \"\"\nglobs: \"\"\nalwaysApply: true\n---\n";
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_with_frontmatter(id, src,
-                        self.home_dir.join(".cursor").join("rules").join(format!("{id}.mdc")),
-                        cursor_fm));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_with_frontmatter(id, src,
-                            repo.join(".cursor").join("rules").join(format!("{id}.mdc")),
-                            cursor_fm));
-                    }
-                }
+            // Only act if the install scope matches the registry scope
+            let want_global = self.scope == InstallScope::Home || self.scope == InstallScope::Both;
+            let want_repo   = self.scope == InstallScope::Repo || self.scope == InstallScope::Both;
 
-                // Copilot: inject applyTo frontmatter, repo-scoped only
-                let copilot_fm = "---\napplyTo: \"**\"\n---\n";
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_with_frontmatter(id, src,
-                            repo.join(".github").join("instructions").join(format!("{id}.instructions.md")),
-                            copilot_fm));
-                    }
-                }
-
-                // Windsurf: no frontmatter — append to global, copy to repo
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(InstallAction {
-                        component_id: id.clone(),
-                        op: InstallOp::AppendFile {
-                            src: src.clone(),
-                            dest: self.home_dir.join(".codeium").join("windsurf").join("global_rules.md"),
-                        },
-                    });
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
+            match tool_folder.as_deref() {
+                Some("kiro") => {
+                    if is_global && want_global {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".windsurf").join("rules").join(format!("{id}.md"))));
+                            self.home_dir.join(".kiro").join("steering").join(format!("{id}.md"))));
+                    }
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            actions.push(self.copy_file_action(id, src,
+                                repo.join(".kiro").join("steering").join(format!("{id}.md"))));
+                        }
                     }
                 }
-
-                // Claude: append to CLAUDE.md / AGENTS.md (no frontmatter)
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(InstallAction {
-                        component_id: id.clone(),
-                        op: InstallOp::AppendFile {
-                            src: src.clone(),
-                            dest: self.home_dir.join(".claude").join("CLAUDE.md"),
-                        },
-                    });
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(InstallAction {
-                            component_id: id.clone(),
-                            op: InstallOp::AppendFile {
-                                src: src.clone(),
-                                dest: repo.join("AGENTS.md"),
-                            },
-                        });
-                    }
-                }
-            }
-
-            // ── kiro: file already has correct frontmatter ───────────────────
-            Some("kiro") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".kiro").join("steering").join(format!("{id}.md"))));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
+                Some("cursor") => {
+                    if is_global && want_global {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".kiro").join("steering").join(format!("{id}.md"))));
+                            self.home_dir.join(".cursor").join("rules").join(format!("{id}.mdc"))));
+                    }
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            actions.push(self.copy_file_action(id, src,
+                                repo.join(".cursor").join("rules").join(format!("{id}.mdc"))));
+                        }
                     }
                 }
-            }
-
-            // ── cursor: file already has correct frontmatter ─────────────────
-            Some("cursor") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".cursor").join("rules").join(format!("{id}.mdc"))));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
+                // Copilot: global → single ~/.copilot/copilot-instructions.md
+                //          repo   → <repo>/.github/instructions/<filename>.instructions.md (extension mandatory)
+                Some("copilot") => {
+                    if is_global && want_global {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".cursor").join("rules").join(format!("{id}.mdc"))));
+                            self.home_dir.join(".copilot").join("copilot-instructions.md")));
+                    }
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            // Preserve original filename but ensure .instructions.md extension
+                            let filename = src.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| format!("{id}.instructions.md"));
+                            let filename = if filename.ends_with(".instructions.md") {
+                                filename
+                            } else {
+                                format!("{}.instructions.md", filename.trim_end_matches(".md"))
+                            };
+                            actions.push(self.copy_file_action(id, src,
+                                repo.join(".github").join("instructions").join(filename)));
+                        }
                     }
                 }
-            }
-
-            // ── copilot: file already has applyTo frontmatter ────────────────
-            Some("copilot") => {
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
+                // Windsurf: global → single ~/.codeium/windsurf/global_rules.md
+                //           repo   → <repo>/.windsurf/rules/<filename>.md
+                Some("windsurf") => {
+                    if is_global && want_global {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".github").join("instructions").join(format!("{id}.instructions.md"))));
+                            self.home_dir.join(".codeium").join("windsurf").join("global_rules.md")));
+                    }
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            let filename = src.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| format!("{id}.md"));
+                            actions.push(self.copy_file_action(id, src,
+                                repo.join(".windsurf").join("rules").join(filename)));
+                        }
                     }
                 }
-            }
-
-            // ── windsurf: no frontmatter ─────────────────────────────────────
-            Some("windsurf") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(InstallAction {
-                        component_id: id.clone(),
-                        op: InstallOp::AppendFile {
-                            src: src.clone(),
-                            dest: self.home_dir.join(".codeium").join("windsurf").join("global_rules.md"),
-                        },
-                    });
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
+                // Claude: global → ~/.claude/rules/<filename>.md  (multiple files supported)
+                //         repo   → <repo>/.claude/rules/<filename>.md
+                Some("claude") => {
+                    if is_global && want_global {
+                        let filename = src.file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| format!("{id}.md"));
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".windsurf").join("rules").join(format!("{id}.md"))));
+                            self.home_dir.join(".claude").join("rules").join(filename)));
+                    }
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            let filename = src.file_name()
+                                .map(|f| f.to_string_lossy().to_string())
+                                .unwrap_or_else(|| format!("{id}.md"));
+                            actions.push(self.copy_file_action(id, src,
+                                repo.join(".claude").join("rules").join(filename)));
+                        }
                     }
                 }
+                // agents: cross-tool AGENTS.md — repo-scoped only
+                //         repo → appended to <repo>/AGENTS.md
+                // Registry authors explicitly opt in by placing files under rules/repo/agents/.
+                // Plain markdown, no frontmatter. Multiple files are appended in order.
+                Some("agents") => {
+                    if is_repo && want_repo {
+                        if let Some(repo) = &self.repo_path {
+                            actions.push(InstallAction {
+                                component_id: id.clone(),
+                                op: InstallOp::AppendFile {
+                                    src: src.clone(),
+                                    dest: repo.join("AGENTS.md"),
+                                },
+                            });
+                        }
+                    }
+                }
+                _ => {}
             }
 
-            // ── claude: no frontmatter ───────────────────────────────────────
-            Some("claude") | _ => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(InstallAction {
-                        component_id: id.clone(),
-                        op: InstallOp::AppendFile {
-                            src: src.clone(),
-                            dest: self.home_dir.join(".claude").join("CLAUDE.md"),
-                        },
-                    });
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(InstallAction {
-                            component_id: id.clone(),
-                            op: InstallOp::AppendFile {
-                                src: src.clone(),
-                                dest: repo.join("AGENTS.md"),
-                            },
-                        });
-                    }
-                }
-            }
+            actions
         }
 
-        actions
-    }
 
     // -----------------------------------------------------------------------
     // Hooks
@@ -412,157 +358,122 @@ impl DestinationResolver {
     // Commands
     //
     // Source layout: commands/<subfolder>/<id>/command.md
-    //   subfolder = common | claude | kiro | copilot | cursor | windsurf
+    //   subfolder = claude | kiro | copilot | cursor | windsurf
     //
-    // Override precedence: tool-specific subfolder wins over common for that tool.
+    // No common/ subfolder — each tool variant is authored in the registry
+    // with the correct frontmatter already baked in. Unknown subfolders are skipped.
     //
-    // common → deploys to ALL tools with injected frontmatter where needed:
-    //   claude   → home: ~/.claude/commands/<id>.md          (no frontmatter)
-    //              repo: <repo>/.claude/commands/<id>.md
-    //   kiro     → home: ~/.kiro/steering/<id>.md            (frontmatter: inclusion: manual)
-    //              repo: <repo>/.kiro/steering/<id>.md       (Kiro has no native commands — steering with manual inclusion IS the slash command)
-    //   copilot  → repo: <repo>/.github/prompts/<id>.prompt.md  (frontmatter: mode: "agent", description: "")
-    //   cursor   → home: ~/.cursor/commands/<id>.md          (no frontmatter)
-    //              repo: <repo>/.cursor/commands/<id>.md
-    //   windsurf → repo: <repo>/.windsurf/workflows/<id>.md  (no frontmatter — Windsurf calls these "workflows")
-    //
-    // Tool-specific subfolders: file already has correct frontmatter baked in.
-    //   claude   → same paths as above
-    //   kiro     → same paths as above (steering with inclusion: manual already in file)
-    //   copilot  → same paths as above (.prompt.md extension, frontmatter already in file)
-    //   cursor   → same paths as above
-    //   windsurf → same paths as above
+    //   claude   → home: ~/.claude/commands/<filename>.md     (invoked as /user:name)
+    //              repo: <repo>/.claude/commands/<filename>.md
+    //   kiro     → home: ~/.kiro/steering/<filename>.md       (inclusion: manual = slash command)
+    //              repo: <repo>/.kiro/steering/<filename>.md
+    //   copilot  → repo: <repo>/.github/prompts/<filename>.prompt.md  (repo-scoped only)
+    //   cursor   → home: ~/.cursor/commands/<filename>.md
+    //              repo: <repo>/.cursor/commands/<filename>.md
+    //   windsurf → home: ~/.codeium/windsurf/global_workflows/<filename>.md
+    //              repo: <repo>/.windsurf/workflows/<filename>.md
     // -----------------------------------------------------------------------
 
     fn resolve_command(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let mut actions = Vec::new();
         let id = &comp.id;
-        let subfolder = self.detect_subfolder(&comp.source_path, "commands");
-        // The actual markdown file inside the component folder
-        let src = &comp.source_path.join("command.md");
+        // source_path is the command file itself (any .md filename)
+        let src = &comp.source_path;
 
-        match subfolder.as_deref() {
-            // ── common: deploy to all tools ──────────────────────────────────
-            Some("common") | None => {
-                // Claude: plain markdown, no frontmatter
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".claude").join("commands").join(format!("{id}.md"))));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_file_action(id, src,
-                            repo.join(".claude").join("commands").join(format!("{id}.md"))));
-                    }
-                }
+        // Registry layout: commands/<scope>/<tool>/file.md
+        //   scope = global | repo
+        //   tool  = kiro | claude | cursor | copilot | windsurf
+        //
+        // global scope:
+        //   kiro     → ~/.kiro/steering/<filename>.md                      (inclusion: manual = slash command)
+        //   claude   → ~/.claude/commands/<filename>.md                    (invoked as /user:name)
+        //   cursor   → ~/.cursor/commands/<filename>.md
+        //   windsurf → ~/.codeium/windsurf/global_workflows/<filename>.md
+        //   copilot  → no portable global path (VS Code profile path varies per machine)
+        //
+        // repo scope:
+        //   kiro     → <repo>/.kiro/steering/<filename>.md
+        //   claude   → <repo>/.claude/commands/<filename>.md
+        //   cursor   → <repo>/.cursor/commands/<filename>.md
+        //   copilot  → <repo>/.github/prompts/<filename>.prompt.md  (extension mandatory)
+        //   windsurf → <repo>/.windsurf/workflows/<filename>.md
 
-                // Kiro: steering file with inclusion: manual (= slash command in Kiro)
-                let kiro_fm = "---\ninclusion: manual\n---\n";
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_with_frontmatter(id, src,
-                        self.home_dir.join(".kiro").join("steering").join(format!("{id}.md")),
-                        kiro_fm));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_with_frontmatter(id, src,
-                            repo.join(".kiro").join("steering").join(format!("{id}.md")),
-                            kiro_fm));
-                    }
-                }
+        let (scope_folder, tool_folder) = self.detect_two_subfolders(src, "commands");
+        let is_global = scope_folder.as_deref() == Some("global");
+        let is_repo   = scope_folder.as_deref() == Some("repo");
+        let want_global = self.scope == InstallScope::Home || self.scope == InstallScope::Both;
+        let want_repo   = self.scope == InstallScope::Repo || self.scope == InstallScope::Both;
 
-                // Copilot: .prompt.md with mode/description frontmatter, repo-scoped only
-                let copilot_fm = "---\nmode: \"agent\"\ndescription: \"\"\n---\n";
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_with_frontmatter(id, src,
-                            repo.join(".github").join("prompts").join(format!("{id}.prompt.md")),
-                            copilot_fm));
-                    }
-                }
+        let filename = src.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("{id}.md"));
 
-                // Cursor: plain markdown, no frontmatter
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".cursor").join("commands").join(format!("{id}.md"))));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_file_action(id, src,
-                            repo.join(".cursor").join("commands").join(format!("{id}.md"))));
-                    }
-                }
-
-                // Windsurf: plain markdown, goes to workflows/, repo-scoped only
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_file_action(id, src,
-                            repo.join(".windsurf").join("workflows").join(format!("{id}.md"))));
-                    }
-                }
-            }
-
-            // ── claude: file already correct ─────────────────────────────────
-            Some("claude") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
-                    actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".claude").join("commands").join(format!("{id}.md"))));
-                }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-                    if let Some(repo) = &self.repo_path {
-                        actions.push(self.copy_file_action(id, src,
-                            repo.join(".claude").join("commands").join(format!("{id}.md"))));
-                    }
-                }
-            }
-
-            // ── kiro: steering with inclusion: manual already in file ─────────
+        match tool_folder.as_deref() {
             Some("kiro") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                if is_global && want_global {
                     actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".kiro").join("steering").join(format!("{id}.md"))));
+                        self.home_dir.join(".kiro").join("steering").join(&filename)));
                 }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                if is_repo && want_repo {
                     if let Some(repo) = &self.repo_path {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".kiro").join("steering").join(format!("{id}.md"))));
+                            repo.join(".kiro").join("steering").join(&filename)));
                     }
                 }
             }
-
-            // ── copilot: .prompt.md with frontmatter already in file ──────────
-            Some("copilot") => {
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+            Some("claude") => {
+                if is_global && want_global {
+                    actions.push(self.copy_file_action(id, src,
+                        self.home_dir.join(".claude").join("commands").join(&filename)));
+                }
+                if is_repo && want_repo {
                     if let Some(repo) = &self.repo_path {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".github").join("prompts").join(format!("{id}.prompt.md"))));
+                            repo.join(".claude").join("commands").join(&filename)));
                     }
                 }
             }
-
-            // ── cursor: plain markdown ────────────────────────────────────────
             Some("cursor") => {
-                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                if is_global && want_global {
                     actions.push(self.copy_file_action(id, src,
-                        self.home_dir.join(".cursor").join("commands").join(format!("{id}.md"))));
+                        self.home_dir.join(".cursor").join("commands").join(&filename)));
                 }
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                if is_repo && want_repo {
                     if let Some(repo) = &self.repo_path {
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".cursor").join("commands").join(format!("{id}.md"))));
+                            repo.join(".cursor").join("commands").join(&filename)));
                     }
                 }
             }
-
-            // ── windsurf: plain markdown, workflows/ ──────────────────────────
-            Some("windsurf") | _ => {
-                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+            // Copilot: repo-only, must end with .prompt.md
+            Some("copilot") => {
+                if is_repo && want_repo {
                     if let Some(repo) = &self.repo_path {
+                        let prompt_filename = if filename.ends_with(".prompt.md") {
+                            filename.clone()
+                        } else {
+                            format!("{}.prompt.md", filename.trim_end_matches(".md"))
+                        };
                         actions.push(self.copy_file_action(id, src,
-                            repo.join(".windsurf").join("workflows").join(format!("{id}.md"))));
+                            repo.join(".github").join("prompts").join(prompt_filename)));
                     }
                 }
             }
+            // Windsurf: global → ~/.codeium/windsurf/global_workflows/<filename>.md
+            //           repo   → <repo>/.windsurf/workflows/<filename>.md
+            Some("windsurf") => {
+                if is_global && want_global {
+                    actions.push(self.copy_file_action(id, src,
+                        self.home_dir.join(".codeium").join("windsurf").join("global_workflows").join(&filename)));
+                }
+                if is_repo && want_repo {
+                    if let Some(repo) = &self.repo_path {
+                        actions.push(self.copy_file_action(id, src,
+                            repo.join(".windsurf").join("workflows").join(&filename)));
+                    }
+                }
+            }
+            _ => {}
         }
 
         actions
@@ -941,17 +852,6 @@ impl DestinationResolver {
         }
     }
 
-    fn copy_with_frontmatter(&self, id: &str, src: &Path, dest: PathBuf, frontmatter: &str) -> InstallAction {
-        InstallAction {
-            component_id: id.to_string(),
-            op: InstallOp::InjectFrontmatter {
-                src: src.to_path_buf(),
-                dest,
-                frontmatter: frontmatter.to_string(),
-            },
-        }
-    }
-
     /// Detects the subfolder name from a source path like `.../rules/kiro/<id>`.
     fn detect_subfolder(&self, src: &Path, parent: &str) -> Option<String> {
         let components: Vec<_> = src.components().collect();
@@ -963,6 +863,20 @@ impl DestinationResolver {
             }
         }
         None
+    }
+
+    /// Detects two subfolder levels after `parent`.
+    /// e.g. `rules/global/kiro/file.md` with parent="rules" → ("global", "kiro")
+    fn detect_two_subfolders(&self, src: &Path, parent: &str) -> (Option<String>, Option<String>) {
+        let components: Vec<_> = src.components().collect();
+        for (i, c) in components.iter().enumerate() {
+            if c.as_os_str() == parent {
+                let first  = components.get(i + 1).map(|c| c.as_os_str().to_string_lossy().to_string());
+                let second = components.get(i + 2).map(|c| c.as_os_str().to_string_lossy().to_string());
+                return (first, second);
+            }
+        }
+        (None, None)
     }
 
     /// Resolves the actual on-disk path for a component that may live under a subfolder.

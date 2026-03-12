@@ -100,7 +100,6 @@ impl Installer {
             InstallOp::AppendFile { src, dest } => self.append_file(src, dest),
             InstallOp::MergeJson { server_def, dest, json_key } => self.merge_json(server_def, dest, json_key),
             InstallOp::CloneRepo { id, repo, branch } => self.clone_system(id, repo, branch),
-            InstallOp::InjectFrontmatter { src, dest, frontmatter } => self.inject_frontmatter(src, dest, frontmatter),
             InstallOp::MergeGitignore { entry, dest } => self.merge_gitignore(entry, dest),
         }
     }
@@ -143,23 +142,6 @@ impl Installer {
             std::fs::create_dir_all(parent).map_err(|e| fs_err(e, parent))?;
         }
         std::fs::copy(src, dest).map_err(|e| fs_err(e, dest))?;
-        Ok(())
-    }
-
-    /// Writes frontmatter + file content to dest. Idempotent: skips if dest already starts with the frontmatter.
-    fn inject_frontmatter(&self, src: &Path, dest: &Path, frontmatter: &str) -> Result<(), HaalError> {
-        if dest.exists() && !self.reinstall_all {
-            let existing = std::fs::read_to_string(dest).unwrap_or_default();
-            if existing.starts_with(frontmatter.trim_end()) {
-                return Ok(());
-            }
-        }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| fs_err(e, parent))?;
-        }
-        let content = std::fs::read_to_string(src).map_err(|e| fs_err(e, src))?;
-        let output = format!("{frontmatter}{content}");
-        std::fs::write(dest, output).map_err(|e| fs_err(e, dest))?;
         Ok(())
     }
 

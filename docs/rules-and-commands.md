@@ -1,6 +1,6 @@
 # Rules and Commands — Tool Compatibility
 
-Rules and commands are the most complex component types to install because every AI coding tool uses a different file format, location, and frontmatter convention. The installer handles this automatically, but registry authors need to understand the model to structure their content correctly.
+Rules and commands are the most complex component types to install because every AI coding tool uses a different file format, location, and frontmatter convention. Registry authors must author one file per target tool — the installer does a plain copy with no frontmatter injection.
 
 ## The problem
 
@@ -10,9 +10,9 @@ A "rule" is a persistent instruction that an AI tool loads into context automati
 |---|---|---|---|---|
 | Kiro | `.kiro/steering/<id>.md` | `inclusion: always \| fileMatch \| manual` | `.kiro/steering/<id>.md` | `inclusion: manual` (steering = command) |
 | Cursor | `.cursor/rules/<id>.mdc` | `description`, `globs`, `alwaysApply` | `.cursor/commands/<id>.md` | none |
-| GitHub Copilot | `.github/instructions/<id>.instructions.md` | `applyTo: "glob"` | `.github/prompts/<id>.prompt.md` | `mode: "agent"`, `description` |
+| GitHub Copilot | `.github/instructions/<id>.instructions.md` (repo) / appended to `.copilot/copilot-instructions.md` (home) | `applyTo: "glob"` (repo only) | `.github/prompts/<id>.prompt.md` | `mode: "agent"`, `description` |
 | Windsurf | `.windsurf/rules/<id>.md` or appended to `global_rules.md` | none | `.windsurf/workflows/<id>.md` | none |
-| Claude Code | appended to `CLAUDE.md` or `AGENTS.md` | none | `.claude/commands/<id>.md` | none |
+| Claude Code | `.claude/rules/<filename>.md` (repo) / `~/.claude/rules/<filename>.md` (global) | none | `.claude/commands/<id>.md` | none |
 
 Key observations:
 - Kiro has no native command system — a steering file with `inclusion: manual` becomes a slash command
@@ -23,41 +23,47 @@ Key observations:
 
 ## The subfolder model
 
-Registry authors place rules and commands in typed subfolders. The subfolder name tells the installer which tool the file targets:
+Registry authors place rules and commands in tool-specific subfolders. The subfolder name tells the installer which tool the file targets. There is no `common/` subfolder — each tool variant must be authored explicitly with the correct frontmatter already in the file.
 
 ```
 rules/
-  common/     ← deployed to ALL tools, installer injects frontmatter
-  kiro/       ← Kiro only, frontmatter already in file
-  cursor/     ← Cursor only, frontmatter already in file
-  copilot/    ← Copilot only, frontmatter already in file
-  windsurf/   ← Windsurf only, no frontmatter needed
-  claude/     ← Claude Code only, no frontmatter needed
-
-commands/
-  common/     ← deployed to ALL tools, installer injects frontmatter
-  kiro/       ← Kiro only (steering with inclusion: manual)
-  copilot/    ← Copilot only (.prompt.md with mode/description)
-  cursor/     ← Cursor only
-  windsurf/   ← Windsurf only (goes to .windsurf/workflows/)
-  claude/     ← Claude Code only
+  global/
+    kiro/       ← Kiro only, frontmatter already in file
+    cursor/     ← Cursor only, frontmatter already in file
+    copilot/    ← Copilot only, frontmatter already in file
+    windsurf/   ← Windsurf only, no frontmatter needed
+    claude/     ← Claude Code only, no frontmatter needed
+  repo/
+    kiro/       ← Kiro only
+    cursor/     ← Cursor only
+    copilot/    ← Copilot only (.instructions.md extension mandatory)
+    windsurf/   ← Windsurf only
+    claude/     ← Claude Code only
+    agents/     ← cross-tool AGENTS.md (plain markdown, no frontmatter, appended to repo root AGENTS.md)
 ```
 
-## Override precedence
+```
+commands/
+  global/
+    kiro/       ← Kiro only (steering with inclusion: manual)
+    claude/     ← Claude Code only (invoked as /user:name)
+    cursor/     ← Cursor only
+    windsurf/   ← Windsurf only (goes to ~/.codeium/windsurf/global_workflows/)
+  repo/
+    kiro/       ← Kiro only
+    claude/     ← Claude Code only (invoked as /name)
+    cursor/     ← Cursor only
+    copilot/    ← Copilot only (.prompt.md extension mandatory)
+    windsurf/   ← Windsurf only (goes to .windsurf/workflows/)
+```
 
-If the same component ID exists in both `common/` and a tool-specific subfolder, **the tool-specific version wins for that tool**. All other tools fall back to `common/`.
+Unknown or missing subfolders are silently skipped.
 
-Example: a rule `security-baseline` exists in both `rules/common/` and `rules/cursor/`.
-- Cursor gets `rules/cursor/security-baseline/rule.md` — the author controls the exact frontmatter (e.g. a specific glob pattern)
-- All other tools get `rules/common/security-baseline/rule.md` — the installer injects the appropriate frontmatter
+## Authoring rules
 
-This lets authors write one canonical version for most tools and only specialise where needed.
+Each tool-specific file must include the correct frontmatter. Examples:
 
-## What the installer injects for `common/` rules
-
-When deploying a rule from `rules/common/`, the installer prepends the correct frontmatter before writing the file:
-
-**Kiro** — `inclusion: always` (always loaded into context):
+**Kiro** (`rules/kiro/<id>/rule.md`) — `inclusion: always`:
 ```markdown
 ---
 inclusion: always
@@ -66,7 +72,7 @@ inclusion: always
 ...
 ```
 
-**Cursor** — `alwaysApply: true` with empty description and globs:
+**Cursor** (`rules/cursor/<id>/rule.md`) — `.mdc` extension at destination:
 ```markdown
 ---
 description: ""
@@ -77,7 +83,7 @@ alwaysApply: true
 ...
 ```
 
-**Copilot** — `applyTo: "**"` (applies to all files), `.instructions.md` extension:
+**Copilot** (`rules/copilot/<id>.instructions.md`) — `applyTo` frontmatter, `.instructions.md` extension mandatory at destination:
 ```markdown
 ---
 applyTo: "**"
@@ -85,14 +91,23 @@ applyTo: "**"
 # My Rule
 ...
 ```
+Global install: appended to `~/.copilot/copilot-instructions.md` (single shared file, no frontmatter needed there).
 
-**Windsurf** — no frontmatter; appended to `~/.codeium/windsurf/global_rules.md` (home) or copied to `.windsurf/rules/<id>.md` (repo).
+**Windsurf** (`rules/windsurf/<id>/rule.md`) — no frontmatter; appended to `global_rules.md` (home) or copied to `.windsurf/rules/<id>.md` (repo).
 
-**Claude Code** — no frontmatter; appended to `~/.claude/CLAUDE.md` (home) or `AGENTS.md` (repo).
+**Claude Code** (`rules/claude/<id>/rule.md`) — no frontmatter; appended to `~/.claude/CLAUDE.md` (home) or `AGENTS.md` (repo).
 
-## What the installer injects for `common/` commands
+## AGENTS.md — cross-tool rules
 
-**Kiro** — steering file with `inclusion: manual` (appears as `/id` in Kiro chat):
+`AGENTS.md` is a cross-tool convention read by Claude Code, Windsurf, Copilot CLI, and others. It is location-scoped: a file at the repo root applies to the whole project; a file in a subdirectory applies only to that directory.
+
+The installer can only place `AGENTS.md` at the repo root (it has no knowledge of the target repo structure). Registry authors who want cross-tool coverage place their content under `rules/repo/agents/` — plain markdown, no frontmatter. Multiple files are appended in order.
+
+Claude-specific rules in `rules/repo/claude/` are NOT automatically copied to `AGENTS.md`. If you want something in `AGENTS.md`, author it explicitly in `rules/repo/agents/`.
+
+## Authoring commands
+
+**Kiro** (`commands/kiro/<id>/command.md`) — steering file with `inclusion: manual`:
 ```markdown
 ---
 inclusion: manual
@@ -101,7 +116,7 @@ inclusion: manual
 ...
 ```
 
-**Copilot** — `.prompt.md` extension with `mode: "agent"` frontmatter:
+**Copilot** (`commands/copilot/<id>/command.md`) — `.prompt.md` extension at destination:
 ```markdown
 ---
 mode: "agent"
@@ -111,56 +126,32 @@ description: ""
 ...
 ```
 
-**Cursor** — plain `.md`, no frontmatter, goes to `.cursor/commands/<id>.md`.
+**Cursor** (`commands/cursor/<id>/command.md`) — plain `.md`, no frontmatter.
 
-**Windsurf** — plain `.md`, goes to `.windsurf/workflows/<id>.md`.
+**Windsurf** (`commands/windsurf/<id>/command.md`) — plain `.md`, goes to `.windsurf/workflows/<id>.md`.
 
-**Claude Code** — plain `.md`, goes to `.claude/commands/<id>.md`.
-
-## Writing tool-specific overrides
-
-When a rule or command needs tool-specific behaviour — a Cursor glob pattern, a Copilot `applyTo` scoped to a specific path, a Kiro `fileMatch` — place it in the tool subfolder with the frontmatter already written:
-
-```
-rules/
-  common/
-    security-baseline/
-      rule.md          ← plain content, no frontmatter
-  cursor/
-    security-baseline/
-      rule.md          ← with globs: "src/**/*.ts" — Cursor only
-  copilot/
-    security-baseline/
-      rule.md          ← with applyTo: "src/**" — Copilot only
-```
-
-The content of the rule (the actual instructions) is typically the same across all versions. Only the frontmatter differs. Authors can keep the content in sync manually, or use the `common/` version as the canonical source and only override the frontmatter in tool-specific files.
+**Claude Code** (`commands/claude/<id>/command.md`) — plain `.md`, goes to `.claude/commands/<id>.md`.
 
 ## Kiro commands are steering files
 
-This is the most counterintuitive part of the model. Kiro does not have a native custom command system. Instead, steering files with `inclusion: manual` appear in the `/` slash command menu in Kiro chat. When the user types `/my-command`, Kiro injects the steering file's content into the conversation context.
+Kiro does not have a native custom command system. Steering files with `inclusion: manual` appear in the `/` slash command menu in Kiro chat. When the user types `/my-command`, Kiro injects the steering file's content into the conversation context.
 
-This means:
-- A command in `commands/kiro/` is stored in `.kiro/steering/` at install time
-- The file must have `inclusion: manual` frontmatter
-- The installer injects this frontmatter automatically for `commands/common/`
-- For `commands/kiro/`, the author writes the frontmatter directly in the file
+A command in `commands/kiro/` is stored in `.kiro/steering/` at install time. The file must have `inclusion: manual` frontmatter written by the registry author.
 
 ## Scope: home vs repo
-
-Some component types are only meaningful in a repo context:
 
 | Type | Home install | Repo install |
 |---|---|---|
 | Rules (Kiro) | `~/.kiro/steering/` | `<repo>/.kiro/steering/` |
 | Rules (Cursor) | `~/.cursor/rules/` | `<repo>/.cursor/rules/` |
-| Rules (Copilot) | — | `<repo>/.github/instructions/` |
+| Rules (Copilot) | appended to `~/.copilot/copilot-instructions.md` | `<repo>/.github/instructions/` (`.instructions.md` extension mandatory) |
 | Rules (Windsurf) | append to `global_rules.md` | `<repo>/.windsurf/rules/` |
-| Rules (Claude) | append to `~/.claude/CLAUDE.md` | append to `<repo>/AGENTS.md` |
+| Rules (Claude) | `~/.claude/rules/` | `<repo>/.claude/rules/` |
+| Rules (AGENTS.md) | — | appended to `<repo>/AGENTS.md` |
 | Commands (Kiro) | `~/.kiro/steering/` | `<repo>/.kiro/steering/` |
 | Commands (Copilot) | — | `<repo>/.github/prompts/` |
 | Commands (Cursor) | `~/.cursor/commands/` | `<repo>/.cursor/commands/` |
-| Commands (Windsurf) | — | `<repo>/.windsurf/workflows/` |
+| Commands (Windsurf) | `~/.codeium/windsurf/global_workflows/` | `<repo>/.windsurf/workflows/` |
 | Commands (Claude) | `~/.claude/commands/` | `<repo>/.claude/commands/` |
 
-Copilot rules and commands are always repo-scoped — Copilot reads them from the repository, not from a global user directory.
+Copilot commands are always repo-scoped — there is no portable global path for Copilot commands. Copilot global rules are written to `~/.copilot/copilot-instructions.md`.

@@ -49,7 +49,7 @@ No other tool has an equivalent concept.
 
 Rules are persistent instructions that an AI tool loads automatically into every conversation context. They encode team standards, coding conventions, security baselines, and similar always-on guidance.
 
-Every tool supports rules but uses a different file format, location, and frontmatter. The installer normalises this — see [rules-and-commands.md](rules-and-commands.md) for the full details.
+Every tool supports rules but uses a different file format, location, and frontmatter. Rules are authored once per target tool in the registry — the installer does a plain copy with no frontmatter injection. See [rules-and-commands.md](rules-and-commands.md) for the full details.
 
 Summary of install locations:
 
@@ -57,7 +57,7 @@ Summary of install locations:
 |---|---|---|
 | Kiro | `~/.kiro/steering/<id>.md` | `<repo>/.kiro/steering/<id>.md` |
 | Cursor | `~/.cursor/rules/<id>.mdc` | `<repo>/.cursor/rules/<id>.mdc` |
-| Copilot | — | `<repo>/.github/instructions/<id>.instructions.md` |
+| Copilot | `~/.copilot/instructions/<id>.instructions.md` | `<repo>/.github/instructions/<id>.instructions.md` |
 | Windsurf | appended to `~/.codeium/windsurf/global_rules.md` | `<repo>/.windsurf/rules/<id>.md` |
 | Claude Code | appended to `~/.claude/CLAUDE.md` | appended to `<repo>/AGENTS.md` |
 
