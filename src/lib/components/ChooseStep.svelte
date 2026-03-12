@@ -7,6 +7,7 @@
     type CompetencyDetail,
   } from "../stores/componentsStore.svelte";
   import { wizardStore } from "../stores/wizardStore.svelte";
+  import { settingsStore } from "../stores/settingsStore.svelte";
 
   let loadError = $state("");
   // Which competency panel is expanded
@@ -19,8 +20,10 @@
     componentsStore.setLoading(true);
     loadError = "";
     try {
+      const seedUrl = wizardStore.registryUrl || null;
       const catalog = await invoke<MergedCatalog>("initialize_catalog", {
-        seedUrl: wizardStore.registryUrl || null,
+        seedUrl,
+        includeTestBranches: settingsStore.useTestBranches,
       });
       componentsStore.setMergedCatalog(catalog);
     } catch (e: any) {

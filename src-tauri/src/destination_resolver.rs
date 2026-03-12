@@ -17,6 +17,8 @@ pub enum InstallOp {
     MergeJson { server_def: McpServerDef, dest: PathBuf, json_key: String },
     /// Clone a git repo into ~/.haal/systems/<id>/ (systems).
     CloneRepo { id: String, repo: String, branch: String },
+    /// Ensure an entry exists in a .gitignore file (idempotent append).
+    MergeGitignore { entry: String, dest: PathBuf },
 }
 
 /// One resolved install action.
@@ -53,6 +55,13 @@ impl DestinationResolver {
     }
 
     fn resolve_one(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
+        // Resolve the actual on-disk path — the frontend may omit the subfolder
+        // (e.g. `rules/test-rule-kiro` instead of `rules/kiro/test-rule-kiro/`)
+        let resolved = ResolvedComponent {
+            source_path: self.resolve_component_path(&comp.source_path),
+            ..comp.clone()
+        };
+        let comp = &resolved;
         match comp.component_type {
             ComponentType::Skill     => self.resolve_skill(comp),
             ComponentType::Power     => self.resolve_power(comp),
@@ -165,8 +174,9 @@ impl DestinationResolver {
     fn resolve_rule(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let mut actions = Vec::new();
         let id = &comp.id;
-        let src = &comp.source_path;
-        let subfolder = self.detect_subfolder(src, "rules");
+        let subfolder = self.detect_subfolder(&comp.source_path, "rules");
+        // The actual markdown file inside the component folder
+        let src = &comp.source_path.join("rule.md");
 
         match subfolder.as_deref() {
             // ── common: deploy to all tools, inject frontmatter ──────────────
@@ -337,16 +347,36 @@ impl DestinationResolver {
     }
 
     // -----------------------------------------------------------------------
-    // Hooks — repo only: <repo>/.kiro/hooks/<id>.kiro.hook
+    // Hooks
+    //
+    // Source layout: hooks/<subfolder>/<id>/hook.json
+    //   kiro    → repo: <repo>/.kiro/hooks/<id>.kiro.hook
+    //   copilot → repo: <repo>/.github/hooks/<id>.json
+    //   (no subfolder) → treated as kiro (backward compat)
     // -----------------------------------------------------------------------
 
     fn resolve_hook(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let mut actions = Vec::new();
-        if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-            if let Some(repo) = &self.repo_path {
+        if self.scope != InstallScope::Repo && self.scope != InstallScope::Both {
+            return actions;
+        }
+        let Some(repo) = &self.repo_path else { return actions; };
+
+        let subfolder = self.detect_subfolder(&comp.source_path, "hooks");
+        match subfolder.as_deref() {
+            Some("copilot") => {
+                // Copilot hooks: .github/hooks/<id>.json
                 actions.push(self.copy_file_action(
                     &comp.id,
-                    &comp.source_path,
+                    &comp.source_path.join("hook.json"),
+                    repo.join(".github").join("hooks").join(format!("{}.json", comp.id)),
+                ));
+            }
+            // kiro or no subfolder → .kiro/hooks/<id>.kiro.hook
+            _ => {
+                actions.push(self.copy_file_action(
+                    &comp.id,
+                    &comp.source_path.join("hook.json"),
                     repo.join(".kiro").join("hooks").join(format!("{}.kiro.hook", comp.id)),
                 ));
             }
@@ -383,8 +413,9 @@ impl DestinationResolver {
     fn resolve_command(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let mut actions = Vec::new();
         let id = &comp.id;
-        let src = &comp.source_path;
-        let subfolder = self.detect_subfolder(src, "commands");
+        let subfolder = self.detect_subfolder(&comp.source_path, "commands");
+        // The actual markdown file inside the component folder
+        let src = &comp.source_path.join("command.md");
 
         match subfolder.as_deref() {
             // ── common: deploy to all tools ──────────────────────────────────
@@ -515,11 +546,17 @@ impl DestinationResolver {
 
     // -----------------------------------------------------------------------
     // Agents
-    // Source layout: agents/<subfolder>/<id>
-    //   github   → repo: <repo>/.github/agents/<id>/
-    //   kiro     → repo: <repo>/.kiro/agents/<id>/
-    //   claude   → repo: <repo>/.claude/agents/<id>/
-    //   common   → all three above
+    //
+    // Source layout: agents/<subfolder>/<id>/
+    //   github → <id>/agent.md  → repo: <repo>/.github/agents/<id>.md
+    //   claude → <id>/agent.md  → repo: <repo>/.claude/agents/<id>.md
+    //   kiro   → <id>/agent.json → home: ~/.kiro/agents/<id>.json
+    //                              repo: <repo>/.kiro/agents/<id>.json
+    //   common → deploys to all three above
+    //
+    // GitHub Copilot agents: markdown with YAML frontmatter, repo-scoped only.
+    // Claude Code agents: markdown with YAML frontmatter, repo-scoped only.
+    // Kiro agents: JSON config file, home or repo.
     // -----------------------------------------------------------------------
 
     fn resolve_agent(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
@@ -528,24 +565,131 @@ impl DestinationResolver {
         let src = &comp.source_path;
         let subfolder = self.detect_subfolder(src, "agents");
 
-        let repo_dests: Vec<PathBuf> = match subfolder.as_deref() {
-            Some("github") => vec![PathBuf::from(".github").join("agents").join(id)],
-            Some("kiro")   => vec![PathBuf::from(".kiro").join("agents").join(id)],
-            Some("claude") => vec![PathBuf::from(".claude").join("agents").join(id)],
-            _ => vec![
-                PathBuf::from(".github").join("agents").join(id),
-                PathBuf::from(".kiro").join("agents").join(id),
-                PathBuf::from(".claude").join("agents").join(id),
-            ],
-        };
-
-        if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
-            if let Some(repo) = &self.repo_path {
-                for rel in repo_dests {
-                    actions.push(InstallAction {
-                        component_id: id.clone(),
-                        op: InstallOp::CopyDir { src: src.clone(), dest: repo.join(rel) },
-                    });
+        match subfolder.as_deref() {
+            Some("github") => {
+                // GitHub Copilot: same markdown format for VS Code IDE, CLI, and GitHub.com
+                // Home scope → ~/.copilot/agents/<id>.md  (Copilot CLI user-level)
+                // Repo scope → <repo>/.github/agents/<id>.md
+                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                    actions.push(self.copy_file_action(id,
+                        &src.join("agent.md"),
+                        self.home_dir.join(".copilot").join("agents").join(format!("{id}.md"))));
+                }
+                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                    if let Some(repo) = &self.repo_path {
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            repo.join(".github").join("agents").join(format!("{id}.md"))));
+                    }
+                }
+            }
+            Some("claude") => {
+                // Claude Code: markdown file, repo-scoped only
+                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                    if let Some(repo) = &self.repo_path {
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            repo.join(".claude").join("agents").join(format!("{id}.md"))));
+                    }
+                }
+            }
+            Some("cursor") => {
+                // Cursor: same markdown format for IDE and CLI
+                // Home scope → ~/.cursor/agents/<id>.md  (user-level)
+                // Repo scope → <repo>/.cursor/agents/<id>.md
+                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                    actions.push(self.copy_file_action(id,
+                        &src.join("agent.md"),
+                        self.home_dir.join(".cursor").join("agents").join(format!("{id}.md"))));
+                }
+                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                    if let Some(repo) = &self.repo_path {
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            repo.join(".cursor").join("agents").join(format!("{id}.md"))));
+                    }
+                }
+            }
+            Some("kiro") => {
+                // Kiro CLI: agent.json  → .kiro/agents/<id>.json
+                // Kiro IDE: agent.md   → .kiro/agents/<id>.md
+                // Install whichever files exist in the registry folder.
+                let json_src = src.join("agent.json");
+                let md_src   = src.join("agent.md");
+                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                    if json_src.exists() {
+                        actions.push(self.copy_file_action(id, &json_src,
+                            self.home_dir.join(".kiro").join("agents").join(format!("{id}.json"))));
+                    }
+                    if md_src.exists() {
+                        actions.push(self.copy_file_action(id, &md_src,
+                            self.home_dir.join(".kiro").join("agents").join(format!("{id}.md"))));
+                    }
+                }
+                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                    if let Some(repo) = &self.repo_path {
+                        if json_src.exists() {
+                            actions.push(self.copy_file_action(id, &json_src,
+                                repo.join(".kiro").join("agents").join(format!("{id}.json"))));
+                        }
+                        if md_src.exists() {
+                            actions.push(self.copy_file_action(id, &md_src,
+                                repo.join(".kiro").join("agents").join(format!("{id}.md"))));
+                        }
+                    }
+                }
+            }
+            _ => {
+                // common / no subfolder → deploy to all tools
+                if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+                    if src.join("agent.md").exists() {
+                        // GitHub Copilot CLI user-level
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            self.home_dir.join(".copilot").join("agents").join(format!("{id}.md"))));
+                        // Cursor user-level
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            self.home_dir.join(".cursor").join("agents").join(format!("{id}.md"))));
+                        // Kiro IDE
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.md"),
+                            self.home_dir.join(".kiro").join("agents").join(format!("{id}.md"))));
+                    }
+                    if src.join("agent.json").exists() {
+                        // Kiro CLI
+                        actions.push(self.copy_file_action(id,
+                            &src.join("agent.json"),
+                            self.home_dir.join(".kiro").join("agents").join(format!("{id}.json"))));
+                    }
+                }
+                if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
+                    if let Some(repo) = &self.repo_path {
+                        if src.join("agent.md").exists() {
+                            // GitHub Copilot repo-level
+                            actions.push(self.copy_file_action(id,
+                                &src.join("agent.md"),
+                                repo.join(".github").join("agents").join(format!("{id}.md"))));
+                            // Claude Code
+                            actions.push(self.copy_file_action(id,
+                                &src.join("agent.md"),
+                                repo.join(".claude").join("agents").join(format!("{id}.md"))));
+                            // Cursor
+                            actions.push(self.copy_file_action(id,
+                                &src.join("agent.md"),
+                                repo.join(".cursor").join("agents").join(format!("{id}.md"))));
+                            // Kiro IDE
+                            actions.push(self.copy_file_action(id,
+                                &src.join("agent.md"),
+                                repo.join(".kiro").join("agents").join(format!("{id}.md"))));
+                        }
+                        if src.join("agent.json").exists() {
+                            // Kiro CLI
+                            actions.push(self.copy_file_action(id,
+                                &src.join("agent.json"),
+                                repo.join(".kiro").join("agents").join(format!("{id}.json"))));
+                        }
+                    }
                 }
             }
         }
@@ -554,17 +698,18 @@ impl DestinationResolver {
     }
 
     // -----------------------------------------------------------------------
-    // Packages — always global
-    // Source layout: packages/<tool>/<id>
-    //   claude → ~/.claude/plugins/<id>/
-    //   kiro   → ~/.kiro/packages/<id>/
+    // Packages — always global, always home-scoped
+    //
+    // Source layout: packages/<tool>/<id>/
+    //   claude → ~/.claude/plugins/<id>/   (Claude plugin bundle)
+    //
+    // Note: Kiro uses Powers (not packages) for bundled multi-file installs.
     // -----------------------------------------------------------------------
 
     fn resolve_package(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let subfolder = self.detect_subfolder(&comp.source_path, "packages");
         let dest = match subfolder.as_deref() {
             Some("claude") => self.home_dir.join(".claude").join("plugins").join(&comp.id),
-            Some("kiro")   => self.home_dir.join(".kiro").join("packages").join(&comp.id),
             _ => return vec![],
         };
         vec![InstallAction {
@@ -574,17 +719,65 @@ impl DestinationResolver {
     }
 
     // -----------------------------------------------------------------------
-    // OlafData — merge to ~/.olaf/data/ (no overwrite)
+    // OlafData — repo-scoped only
+    //
+    // source_path = <registry>/.olaf  (the whole .olaf folder)
+    //
+    // Scans .olaf/data/{product,practices,peoples,projects,kb}/:
+    //   - Skip if folder is absent, empty, or contains only .gitkeep
+    //   - Otherwise: CopyDir → <repo>/.olaf/data/<subfolder>/
+    //
+    // Always emits MergeGitignore for ".olaf/work/" in the target repo.
     // -----------------------------------------------------------------------
 
     fn resolve_olaf_data(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
-        vec![InstallAction {
+        let mut actions = Vec::new();
+        let repo = match &self.repo_path {
+            Some(r) => r,
+            None => return actions, // repo-scoped only
+        };
+
+        let olaf_root = &comp.source_path; // <registry>/.olaf
+        let data_root = olaf_root.join("data");
+
+        for subfolder in &["product", "practices", "peoples", "projects", "kb"] {
+            let src = data_root.join(subfolder);
+            if !src.is_dir() {
+                continue;
+            }
+            // Skip if only .gitkeep (or empty)
+            if self.is_empty_or_gitkeep_only(&src) {
+                continue;
+            }
+            actions.push(InstallAction {
+                component_id: comp.id.clone(),
+                op: InstallOp::CopyDir {
+                    src: src.clone(),
+                    dest: repo.join(".olaf").join("data").join(subfolder),
+                },
+            });
+        }
+
+        // Always ensure .olaf/work/ is gitignored in the target repo
+        actions.push(InstallAction {
             component_id: comp.id.clone(),
-            op: InstallOp::CopyDir {
-                src: comp.source_path.clone(),
-                dest: self.home_dir.join(".olaf").join("data"),
+            op: InstallOp::MergeGitignore {
+                entry: ".olaf/work/".to_string(),
+                dest: repo.join(".gitignore"),
             },
-        }]
+        });
+
+        actions
+    }
+
+    /// Returns true if a directory is empty or contains only `.gitkeep` files.
+    fn is_empty_or_gitkeep_only(&self, dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else { return true; };
+        let files: Vec<_> = entries.flatten().collect();
+        if files.is_empty() {
+            return true;
+        }
+        files.iter().all(|e| e.file_name() == ".gitkeep")
     }
 
     // -----------------------------------------------------------------------
@@ -746,5 +939,30 @@ impl DestinationResolver {
             }
         }
         None
+    }
+
+    /// Resolves the actual on-disk path for a component that may live under a subfolder.
+    ///
+    /// The frontend builds `source_path` as `<registry>/<type_dir>/<id>` (no subfolder).
+    /// But the registry may store it as `<registry>/<type_dir>/<subfolder>/<id>/`.
+    /// This helper returns the real path, scanning subfolders if the direct path doesn't exist.
+    fn resolve_component_path(&self, src: &Path) -> PathBuf {
+        if src.exists() {
+            return src.to_path_buf();
+        }
+        // Try scanning one level of subfolders in the parent directory
+        if let Some(parent) = src.parent() {
+            if let Some(id) = src.file_name() {
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let candidate = entry.path().join(id);
+                        if candidate.exists() {
+                            return candidate;
+                        }
+                    }
+                }
+            }
+        }
+        src.to_path_buf() // fall back to original even if not found
     }
 }

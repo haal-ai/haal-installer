@@ -10,8 +10,8 @@ The installer supports nine types of AI artifacts. Each type maps to a different
 | Power | Kiro-specific extension (MCP server + docs bundle) | ✓ | — | — | — | — |
 | Rule | Persistent instruction always loaded into AI context | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Command | Reusable prompt invoked via slash command | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Hook | Event-driven automation (file save, prompt submit, etc.) | ✓ | — | — | — | — |
-| Agent | Standalone agent definition | ✓ | — | ✓ | — | ✓ |
+| Hook | Event-driven automation (file save, prompt submit, etc.) | ✓ | — | ✓ | — | — |
+| Agent | Standalone agent definition | ✓ | ✓ | ✓ | — | ✓ |
 | MCP Server | Model Context Protocol server configuration | ✓ | ✓ | — | ✓ | ✓ |
 | System | Full agentic application cloned from its own repo | — | — | — | — | — |
 | OLAF Data | Shared knowledge base data (people, projects, practices) | — | — | — | — | — |
@@ -91,9 +91,21 @@ See [rules-and-commands.md](rules-and-commands.md) for the subfolder model and f
 
 Hooks are event-driven automations. They trigger an agent action or shell command when an IDE event occurs — a file is saved, a prompt is submitted, a tool is about to run, etc.
 
-Currently Kiro-specific. Hooks are stored as `.kiro.hook` JSON files.
+Supported by Kiro and GitHub Copilot. Each uses a different format and location.
+
+### Kiro hooks
+
+JSON files with `enabled`, `name`, `description`, `version`, `when` (type + patterns/toolTypes), and `then` (type + prompt/command).
 
 Install location (repo-scoped only): `<repo>/.kiro/hooks/<id>.kiro.hook`
+
+### GitHub Copilot hooks
+
+JSON files with `version: 1` and a `hooks` object containing arrays of hook entries per trigger (`preToolUse`, `sessionStart`, etc.). Each entry has `type: "command"`, `bash` or `powershell` script, and optional `cwd`, `env`, `timeoutSec`.
+
+Install location (repo-scoped only): `<repo>/.github/hooks/<id>.json`
+
+Registry layout: `hooks/kiro/<id>/hook.json` and `hooks/copilot/<id>/hook.json`
 
 Hooks are always repo-scoped — they encode project-specific automation, not global user preferences.
 
@@ -101,16 +113,111 @@ Hooks are always repo-scoped — they encode project-specific automation, not gl
 
 ## Agents
 
-Agent definitions describe a standalone AI agent with its own persona, instructions, and tool access. The concept exists in Kiro, GitHub Copilot (via `.github/agents/`), and Claude Code (via `.claude/agents/`).
+Agent definitions describe a standalone AI agent with its own persona, instructions, and tool access. Each tool uses a different file format.
 
-Install locations (repo-scoped only):
+### Kiro agents
 
-| Subfolder in registry | Destination |
-|---|---|
-| `agents/kiro/` | `<repo>/.kiro/agents/<id>/` |
-| `agents/github/` | `<repo>/.github/agents/<id>/` |
-| `agents/claude/` | `<repo>/.claude/agents/<id>/` |
-| `agents/common/` | all three above |
+Kiro has two formats — one for the CLI (JSON) and one for the IDE (markdown with YAML frontmatter). Both live in `.kiro/agents/`. The registry can include either or both; the installer copies whichever files are present.
+
+Registry folder: `agents/kiro/<id>/`
+
+CLI format (`agent.json`):
+```json
+{
+  "name": "my-agent",
+  "description": "What this agent does.",
+  "prompt": "You are a specialist in...",
+  "tools": ["read", "write", "shell", "@git"],
+  "allowedTools": ["read", "@git/git_status"],
+  "model": "claude-sonnet-4",
+  "welcomeMessage": "Ready to help!"
+}
+```
+
+IDE format (`agent.md`):
+```markdown
+---
+name: my-agent
+description: Use this agent when... (used for automatic agent selection)
+model: claude-sonnet-4
+tools:
+  - read
+  - write
+---
+
+You are a specialist in...
+```
+
+Note: MCP env vars differ between CLI (`${env:TOKEN}`) and IDE (`${TOKEN}`). Keep this in mind when writing `mcpServers` config in `agent.json`.
+
+### Cursor agents
+
+Cursor custom subagents use the same markdown+YAML frontmatter format as Claude Code. Same format for both the IDE and CLI.
+
+Registry file: `agents/cursor/<id>/agent.md`
+
+```markdown
+---
+name: my-agent
+description: "What this agent does. Use when..."
+model: fast
+---
+
+You are a specialist in...
+```
+
+`model` uses Cursor aliases: `fast` (cheaper, quick tasks) or `slow` (more capable, complex tasks).
+
+### GitHub Copilot agents
+
+Copilot custom agents are markdown files with YAML frontmatter stored in `.github/agents/`. They are repo-scoped only.
+
+Registry file: `agents/github/<id>/agent.md`
+
+```markdown
+---
+name: my-agent
+description: What this agent does. Use this agent when...
+tools: ["read", "search", "edit"]
+---
+
+You are a specialist in...
+```
+
+### Claude Code agents
+
+Claude Code agents are markdown files with YAML frontmatter stored in `.claude/agents/`. They are repo-scoped only.
+
+Registry file: `agents/claude/<id>/agent.md`
+
+```markdown
+---
+name: my-agent
+description: What this agent does.
+tools:
+  - read
+  - write
+---
+
+You are a specialist in...
+```
+
+### Install locations
+
+| Subfolder in registry | File | Scope | Destination |
+|---|---|---|---|
+| `agents/kiro/` | `agent.json` | Home | `~/.kiro/agents/<id>.json` |
+| `agents/kiro/` | `agent.json` | Repo | `<repo>/.kiro/agents/<id>.json` |
+| `agents/kiro/` | `agent.md` | Home | `~/.kiro/agents/<id>.md` |
+| `agents/kiro/` | `agent.md` | Repo | `<repo>/.kiro/agents/<id>.md` |
+| `agents/github/` | `agent.md` | Home | `~/.copilot/agents/<id>.md` (CLI user-level) |
+| `agents/github/` | `agent.md` | Repo | `<repo>/.github/agents/<id>.md` |
+| `agents/claude/` | `agent.md` | Repo | `<repo>/.claude/agents/<id>.md` |
+| `agents/cursor/` | `agent.md` | Home | `~/.cursor/agents/<id>.md` |
+| `agents/cursor/` | `agent.md` | Repo | `<repo>/.cursor/agents/<id>.md` |
+| `agents/common/` | both | Both | all of the above |
+
+Note: GitHub Copilot uses the same markdown format across VS Code, the CLI, and GitHub.com. The `argument-hint` and `handoffs` properties are VS Code/IDE-only and ignored elsewhere.
 
 ---
 

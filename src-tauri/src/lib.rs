@@ -769,7 +769,11 @@ fn check_requirements(
 /// 4. Merges all catalogs — seed wins on conflict
 /// Returns the merged catalog for the frontend to display.
 #[tauri::command]
-async fn initialize_catalog(seed_url: Option<String>) -> Result<MergedCatalog, String> {
+async fn initialize_catalog(
+    seed_url: Option<String>,
+    #[allow(unused_variables)]
+    include_test_branches: Option<bool>,
+) -> Result<MergedCatalog, String> {
     let url = seed_url
         .filter(|u| !u.trim().is_empty())
         .unwrap_or_else(|| registry_manager::DEFAULT_REGISTRY_URL.to_string());
@@ -786,20 +790,51 @@ async fn initialize_catalog(seed_url: Option<String>) -> Result<MergedCatalog, S
     let seed_path = manager.clone_or_pull(&repo, &branch, None)
         .map_err(|e| e.to_string())?;
 
-    manager.build_merged_catalog(&seed_path)
+    let include_test = include_test_branches.unwrap_or(false);
+    manager.build_merged_catalog(&seed_path, include_test)
         .map_err(|e| e.to_string())
 }
 
-/// Parses a GitHub raw URL to extract (owner/repo, branch).
+/// Parses a GitHub URL to extract (owner/repo, branch).
+/// Supports:
+///   - `https://raw.githubusercontent.com/<owner>/<repo>/<branch>/...`
+///   - `https://github.com/<owner>/<repo>`
+///   - `https://github.com/<owner>/<repo>/tree/<branch>`
+///   - `<owner>/<repo>` (bare slug)
 fn parse_github_raw_url(url: &str) -> Option<(String, String)> {
-    // https://raw.githubusercontent.com/<owner>/<repo>/<branch>/...
-    let stripped = url.strip_prefix("https://raw.githubusercontent.com/")?;
-    let parts: Vec<&str> = stripped.splitn(4, '/').collect();
-    if parts.len() >= 3 {
-        Some((format!("{}/{}", parts[0], parts[1]), parts[2].to_string()))
-    } else {
-        None
+    let trimmed = url.trim().trim_end_matches('/');
+
+    // raw.githubusercontent.com format
+    if let Some(stripped) = trimmed.strip_prefix("https://raw.githubusercontent.com/") {
+        let parts: Vec<&str> = stripped.splitn(4, '/').collect();
+        if parts.len() >= 3 {
+            return Some((format!("{}/{}", parts[0], parts[1]), parts[2].to_string()));
+        }
     }
+
+    // Regular github.com URL
+    if let Some(stripped) = trimmed.strip_prefix("https://github.com/") {
+        let stripped = stripped.trim_end_matches(".git");
+        let parts: Vec<&str> = stripped.split('/').collect();
+        // owner/repo/tree/branch
+        if parts.len() >= 4 && parts[2] == "tree" {
+            return Some((format!("{}/{}", parts[0], parts[1]), parts[3].to_string()));
+        }
+        // owner/repo
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((format!("{}/{}", parts[0], parts[1]), "main".to_string()));
+        }
+    }
+
+    // Bare slug: owner/repo
+    let parts: Vec<&str> = trimmed.splitn(3, '/').collect();
+    if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty()
+        && !parts[0].contains(':')
+    {
+        return Some((format!("{}/{}", parts[0], parts[1]), "main".to_string()));
+    }
+
+    None
 }
 
 /// Installs components using the new multi-registry install engine.
@@ -926,9 +961,21 @@ fn export_configuration(output_path: String) -> Result<(), String> {
         .join("config")
         .join("configuration.json");
     let manager = ConfigurationManager::new(config_path);
-    manager
-        .export_profile(&output_path.into())
-        .map_err(|e| e.to_string())
+    let mut profile = manager.export_profile_value().map_err(|e| e.to_string())?;
+
+    // Merge last_install.json into the export so the full picture is captured
+    if let Ok(Some(last)) = load_last_install() {
+        if let Ok(v) = serde_json::to_value(&last) {
+            profile.as_object_mut().unwrap().insert("last_install".to_string(), v);
+        }
+    }
+
+    let json = serde_json::to_string_pretty(&profile).map_err(|e| e.to_string())?;
+    let path: std::path::PathBuf = output_path.into();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, json).map_err(|e| e.to_string())
 }
 
 /// Imports a configuration profile from the given JSON file path.
@@ -938,6 +985,18 @@ fn import_configuration(input_path: String) -> Result<ConfigurationProfile, Stri
         .join("config")
         .join("configuration.json");
     let manager = ConfigurationManager::new(config_path);
+
+    // Read the file once, restore last_install if present, then import preferences
+    let raw = std::fs::read_to_string(&input_path).map_err(|e| e.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+
+    // Restore last_install profile if embedded
+    if let Some(last_val) = value.get("last_install") {
+        if let Ok(last) = serde_json::from_value::<LastInstallProfile>(last_val.clone()) {
+            let _ = save_last_install(last);
+        }
+    }
+
     manager
         .import_profile(&input_path.into())
         .map_err(|e| e.to_string())
@@ -1069,7 +1128,7 @@ async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
     } else {
         profile.seed_url.clone()
     };
-    let catalog = initialize_catalog(Some(seed_url)).await?;
+    let catalog = initialize_catalog(Some(seed_url), None).await?;
 
     // Resolve competency details and build component list
     let cache_root = SelfInstaller::haal_home().join("cache").join("repos");

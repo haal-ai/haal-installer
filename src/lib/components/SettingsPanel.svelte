@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
-  import { settingsStore, type Theme, SUPPORTED_TOOLS, type SupportedTool } from "../stores/settingsStore.svelte";
+  import { settingsStore, type Theme, SUPPORTED_TOOLS, ARTIFACT_TYPES, ARTIFACT_LABELS, type SupportedTool, type ArtifactType } from "../stores/settingsStore.svelte";
 
   const TOOL_DESCRIPTIONS: Record<SupportedTool, string> = {
     "Kiro":        "Skills, Powers, Hooks, MCP",
@@ -16,8 +16,15 @@
   async function exportConfiguration() {
     profileMessage = ""; profileError = "";
     try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const filePath = await save({
+        title: "Export Configuration",
+        defaultPath: "haal-config.json",
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!filePath) return;
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("export_configuration", { path: "" });
+      await invoke("export_configuration", { outputPath: filePath });
       profileMessage = $_("settings.profile.exportSuccess");
     } catch (err) { profileError = String(err); }
   }
@@ -25,8 +32,15 @@
   async function importConfiguration() {
     profileMessage = ""; profileError = "";
     try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const filePath = await open({
+        title: "Import Configuration",
+        multiple: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!filePath) return;
       const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("import_configuration", { path: "" });
+      await invoke("import_configuration", { inputPath: typeof filePath === "string" ? filePath : filePath[0] });
       profileMessage = $_("settings.profile.importSuccess");
       await settingsStore.loadFromBackend();
     } catch (err) { profileError = String(err); }
@@ -64,6 +78,33 @@
             <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{tool}</span>
             <span class="text-xs text-gray-400 dark:text-gray-500 ml-2">{TOOL_DESCRIPTIONS[tool]}</span>
           </div>
+        </div>
+      {/each}
+    </div>
+  </section>
+
+  <!-- ==================== Artifact Types ==================== -->
+  <section class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-5">
+    <div class="mb-4">
+      <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">Artifact types</h3>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+        Choose which artifact types HAAL installs. Unchecked types are skipped even if present in the registry.
+      </p>
+    </div>
+    <div class="space-y-2">
+      {#each ARTIFACT_TYPES as type}
+        {@const enabled = settingsStore.isArtifactEnabled(type)}
+        <div class="flex items-center gap-3 p-3 rounded-lg bg-gray-50 dark:bg-gray-700/50">
+          <button
+            onclick={() => settingsStore.toggleArtifact(type)}
+            class="shrink-0 w-9 h-5 rounded-full transition-colors relative {enabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'}"
+            role="switch"
+            aria-checked={enabled}
+            aria-label={ARTIFACT_LABELS[type]}
+          >
+            <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform {enabled ? 'translate-x-4' : 'translate-x-0'}"></span>
+          </button>
+          <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{ARTIFACT_LABELS[type]}</span>
         </div>
       {/each}
     </div>
@@ -151,6 +192,39 @@
         </button>
       </div>
     </div>
+  </section>
+
+  <!-- ==================== Developer ==================== -->
+  <section class="bg-white dark:bg-gray-800 rounded-lg border border-amber-200 dark:border-amber-800 p-5">
+    <div class="mb-4">
+      <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100">Developer</h3>
+      <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+        Options for testing and development. Not intended for regular use.
+      </p>
+    </div>
+    <div class="flex items-center justify-between">
+      <div>
+        <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Include test-branch registries</span>
+        <p class="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+          By default, registries on branches starting with <code class="font-mono">test</code> are skipped.
+          Enable this to include them (useful when testing new registry content).
+        </p>
+      </div>
+      <button
+        onclick={() => settingsStore.setUseTestBranches(!settingsStore.useTestBranches)}
+        class="shrink-0 w-9 h-5 rounded-full transition-colors relative ml-4 {settingsStore.useTestBranches ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}"
+        role="switch"
+        aria-checked={settingsStore.useTestBranches}
+        aria-label="Use test branches"
+      >
+        <span class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform {settingsStore.useTestBranches ? 'translate-x-4' : 'translate-x-0'}"></span>
+      </button>
+    </div>
+    {#if settingsStore.useTestBranches}
+      <p class="mt-3 text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-3 py-2">
+        ⚠ Test-branch registries are included. They may contain incomplete or experimental content.
+      </p>
+    {/if}
   </section>
 
   <!-- ==================== Profile ==================== -->

@@ -58,6 +58,8 @@ pub struct CompetencyDetail {
     pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub systems: Vec<String>,
+    #[serde(default)]
+    pub packages: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +381,12 @@ pub struct UserPreferences {
     pub language: Language,
     pub auto_update: bool,
     pub parallel_operations: bool,
+    #[serde(default)]
+    pub enabled_tools: Vec<String>,
+    #[serde(default)]
+    pub enabled_artifacts: Vec<String>,
+    #[serde(default)]
+    pub use_test_branches: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

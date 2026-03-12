@@ -101,6 +101,7 @@ impl Installer {
             InstallOp::MergeJson { server_def, dest, json_key } => self.merge_json(server_def, dest, json_key),
             InstallOp::CloneRepo { id, repo, branch } => self.clone_system(id, repo, branch),
             InstallOp::InjectFrontmatter { src, dest, frontmatter } => self.inject_frontmatter(src, dest, frontmatter),
+            InstallOp::MergeGitignore { entry, dest } => self.merge_gitignore(entry, dest),
         }
     }
 
@@ -242,6 +243,34 @@ impl Installer {
                 entry
             }
         }
+    }
+
+    /// Ensures `entry` is present in a `.gitignore` file. Idempotent.
+    fn merge_gitignore(&self, entry: &str, dest: &Path) -> Result<(), HaalError> {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| fs_err(e, parent))?;
+        }
+        let existing = if dest.exists() {
+            std::fs::read_to_string(dest).map_err(|e| fs_err(e, dest))?
+        } else {
+            String::new()
+        };
+        // Check line-by-line to avoid false positives
+        if existing.lines().any(|l| l.trim() == entry.trim()) {
+            return Ok(());
+        }
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+            .map_err(|e| fs_err(e, dest))?;
+        // Ensure we start on a new line
+        if !existing.is_empty() && !existing.ends_with('\n') {
+            writeln!(file).map_err(|e| fs_err(e, dest))?;
+        }
+        writeln!(file, "{entry}").map_err(|e| fs_err(e, dest))?;
+        Ok(())
     }
 
     fn emit_progress(&self, event: InstallProgressEvent) {

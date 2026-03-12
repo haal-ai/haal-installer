@@ -6,6 +6,23 @@ export type Theme = "light" | "dark" | "system";
 export const SUPPORTED_TOOLS = ["Kiro", "Copilot", "Cursor", "Claude Code", "Windsurf"] as const;
 export type SupportedTool = typeof SUPPORTED_TOOLS[number];
 
+export const ARTIFACT_TYPES = ["skills", "powers", "hooks", "commands", "rules", "agents", "mcpServers", "packages", "systems", "olafData"] as const;
+export type ArtifactType = typeof ARTIFACT_TYPES[number];
+
+const ARTIFACT_LABELS: Record<ArtifactType, string> = {
+  skills:     "Skills",
+  powers:     "Powers",
+  hooks:      "Hooks",
+  commands:   "Commands",
+  rules:      "Rules",
+  agents:     "Agents",
+  mcpServers: "MCP Servers",
+  packages:   "Packages (Claude plugins)",
+  systems:    "Agentic Systems",
+  olafData:   ".olaf/data (knowledge base)",
+};
+export { ARTIFACT_LABELS };
+
 function getSystemTheme(): "light" | "dark" {
   if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -29,6 +46,10 @@ function createSettingsStore() {
   let parallelOperations = $state(true);
   // Which tools are enabled for install (all on by default)
   let enabledTools = $state<Set<SupportedTool>>(new Set(SUPPORTED_TOOLS));
+  // Which artifact types are enabled for install (all on by default)
+  let enabledArtifacts = $state<Set<ArtifactType>>(new Set(ARTIFACT_TYPES));
+  // Developer: use test branches for registries instead of main
+  let useTestBranches = $state(false);
 
   // Apply initial theme
   applyTheme(theme);
@@ -62,6 +83,29 @@ function createSettingsStore() {
     },
     isToolEnabled(tool: SupportedTool) {
       return enabledTools.has(tool);
+    },
+    get enabledArtifacts() {
+      return enabledArtifacts;
+    },
+    isArtifactEnabled(type: ArtifactType) {
+      return enabledArtifacts.has(type);
+    },
+    toggleArtifact(type: ArtifactType) {
+      const next = new Set(enabledArtifacts);
+      if (next.has(type)) next.delete(type); else next.add(type);
+      enabledArtifacts = next;
+      this.persistToBackend();
+    },
+    get useTestBranches() {
+      return useTestBranches;
+    },
+    setUseTestBranches(value: boolean) {
+      useTestBranches = value;
+      this.persistToBackend();
+    },
+    /** Returns the effective branch name for registry fetches. */
+    get registryBranch(): string {
+      return useTestBranches ? "test" : "main";
     },
     get resolvedTheme(): "light" | "dark" {
       return theme === "system" ? getSystemTheme() : theme;
@@ -98,15 +142,20 @@ function createSettingsStore() {
 
     async persistToBackend() {
       try {
+        // Store the explicit list only when it's a subset; empty = all enabled (default)
+        const toolsToStore = enabledTools.size === SUPPORTED_TOOLS.length
+          ? [] : Array.from(enabledTools);
+        const artifactsToStore = enabledArtifacts.size === ARTIFACT_TYPES.length
+          ? [] : Array.from(enabledArtifacts);
         await invoke("save_config", {
-          config: {
-            preferences: {
-              theme,
-              language,
-              auto_update: autoUpdate,
-              parallel_operations: parallelOperations,
-              enabled_tools: Array.from(enabledTools),
-            },
+          preferences: {
+            theme,
+            language,
+            auto_update: autoUpdate,
+            parallel_operations: parallelOperations,
+            enabled_tools: toolsToStore,
+            enabled_artifacts: artifactsToStore,
+            use_test_branches: useTestBranches,
           },
         });
       } catch {
@@ -116,35 +165,36 @@ function createSettingsStore() {
 
     async loadFromBackend() {
       try {
-        const config = await invoke<{
-          preferences?: {
-            theme?: Theme;
-            language?: string;
-            auto_update?: boolean;
-            parallel_operations?: boolean;
-            enabled_tools?: string[];
-          };
+        const prefs = await invoke<{
+          theme?: Theme;
+          language?: string;
+          auto_update?: boolean;
+          parallel_operations?: boolean;
+          enabled_tools?: string[];
+          enabled_artifacts?: string[];
+          use_test_branches?: boolean;
         }>("get_config");
-        if (config?.preferences) {
-          const p = config.preferences;
-          if (p.theme) {
-            theme = p.theme;
-            applyTheme(theme);
-          }
-          if (p.language) {
-            language = p.language;
-            locale.set(p.language);
-          }
+        if (prefs) {
+          const p = prefs;
+          if (p.theme) { theme = p.theme; applyTheme(theme); }
+          if (p.language) { language = p.language; locale.set(p.language); }
           if (p.auto_update !== undefined) autoUpdate = p.auto_update;
-          if (p.parallel_operations !== undefined)
-            parallelOperations = p.parallel_operations;
-          if (p.enabled_tools) {
+          if (p.parallel_operations !== undefined) parallelOperations = p.parallel_operations;
+          if (p.enabled_tools && p.enabled_tools.length > 0) {
             enabledTools = new Set(
-              (p.enabled_tools as string[]).filter((t): t is SupportedTool =>
+              p.enabled_tools.filter((t): t is SupportedTool =>
                 (SUPPORTED_TOOLS as readonly string[]).includes(t)
               )
             );
           }
+          if (p.enabled_artifacts && p.enabled_artifacts.length > 0) {
+            enabledArtifacts = new Set(
+              p.enabled_artifacts.filter((a): a is ArtifactType =>
+                (ARTIFACT_TYPES as readonly string[]).includes(a)
+              )
+            );
+          }
+          if (p.use_test_branches !== undefined) useTestBranches = p.use_test_branches;
         }
       } catch {
         // Backend not available yet — use defaults

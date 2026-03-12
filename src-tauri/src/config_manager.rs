@@ -15,6 +15,49 @@ impl ConfigurationManager {
         Self { config_path }
     }
 
+    /// Exports the current configuration as a JSON value (for embedding in a larger export).
+    pub fn export_profile_value(&self) -> Result<serde_json::Value, HaalError> {
+        let preferences = self.load_config()?;
+
+        let profile = if self.config_path.exists() {
+            let raw = fs::read_to_string(&self.config_path).map_err(|e| {
+                HaalError::FileSystem(FileSystemError {
+                    message: format!("Failed to read config for export: {e}"),
+                    path: Some(self.config_path.display().to_string()),
+                })
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+                HaalError::Validation(ValidationError {
+                    message: format!("Invalid JSON in config file: {e}"),
+                    field: None,
+                })
+            })?;
+
+            let repositories: Vec<String> = value.get("repositories")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let selected_components: Vec<String> = value.get("selected_components")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let destinations: Vec<Destination> = value.get("destinations")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+
+            ConfigurationProfile { repositories, selected_components, destinations, preferences }
+        } else {
+            ConfigurationProfile {
+                repositories: Vec::new(),
+                selected_components: Vec::new(),
+                destinations: Vec::new(),
+                preferences,
+            }
+        };
+
+        serde_json::to_value(&profile).map_err(|e| {
+            HaalError::Validation(ValidationError {
+                message: format!("Failed to serialize profile: {e}"),
+                field: None,
+            })
+        })
+    }
+
     /// Exports the current configuration to a profile JSON file.
     ///
     /// Reads the current configuration from disk, wraps it in a
@@ -305,6 +348,9 @@ impl ConfigurationManager {
             language: Language::English,
             auto_update: true,
             parallel_operations: true,
+            enabled_tools: vec![],
+            enabled_artifacts: vec![],
+            use_test_branches: false,
         }
     }
 

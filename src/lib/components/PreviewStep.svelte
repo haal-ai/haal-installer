@@ -3,9 +3,9 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import { open as openUrl } from "@tauri-apps/plugin-shell";
+  import { settingsStore } from "../stores/settingsStore.svelte";
   import { wizardStore } from "../stores/wizardStore.svelte";
   import { componentsStore, type McpServerDef } from "../stores/componentsStore.svelte";
-  import { settingsStore } from "../stores/settingsStore.svelte";
 
   let loading = $state(true);
   let installedAtHome = $state<Record<string, Set<string>>>({});
@@ -148,11 +148,24 @@
     return list;
   });
 
+  let allPackages = $derived.by(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const id of allCompetencyIds) {
+      const d = componentsStore.competencyDetails[id];
+      if (d) for (const p of (d.packages ?? [])) if (!seen.has(p)) { seen.add(p); list.push(p); }
+    }
+    return list;
+  });
+
+  let hasOlafData = $derived(settingsStore.isArtifactEnabled("olafData"));
+
   let reinstallAll = $derived(wizardStore.reinstallAll);
 
   // Which tools support which component types
   // Returns count or null (= not applicable / tool not selected)
   function typeToolCount(type: string, toolKey: string): number | null {
+    if (!settingsStore.isArtifactEnabled(type as any)) return null;
     const tl = toolKey.toLowerCase();
     const isKiro = tl.includes("kiro");
     const isClaude = tl.includes("claude");
@@ -167,11 +180,14 @@
       case "rules":    return (isKiro || isCursor || isWindsurf || isClaude || isCopilot) ? allRules.length : null;
       case "agents":   return null; // repo-only, shown in repo column
       case "mcp":      return (isKiro || isClaude || isCursor || isWindsurf || isCopilot) ? allMcpServers.length : null;
+      case "packages": return (isKiro || isClaude) ? allPackages.length : null;
+      case "olafData": return null; // repo-only
       default:         return null;
     }
   }
 
   function typeRepoCount(type: string): number | null {
+    if (!settingsStore.isArtifactEnabled(type as any)) return null;
     const hasRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath;
     if (!hasRepo) return null;
     switch (type) {
@@ -182,19 +198,23 @@
       case "agents":   return allAgents.length;
       case "powers":   return null; // home only
       case "mcp":      return allMcpServers.length;
+      case "packages": return null; // home only (global install)
+      case "olafData": return hasOlafData ? 1 : null;
       default:         return null;
     }
   }
 
   // Matrix rows definition
   const matrixRows = [
-    { type: "skills",   label: "Skills",   color: "text-green-600 dark:text-green-400" },
-    { type: "powers",   label: "Powers",   color: "text-purple-600 dark:text-purple-400" },
-    { type: "hooks",    label: "Hooks",    color: "text-amber-600 dark:text-amber-400" },
-    { type: "commands", label: "Commands", color: "text-blue-600 dark:text-blue-400" },
-    { type: "rules",    label: "Rules",    color: "text-indigo-600 dark:text-indigo-400" },
-    { type: "agents",   label: "Agents",   color: "text-rose-600 dark:text-rose-400" },
-    { type: "mcp",      label: "MCP",      color: "text-cyan-600 dark:text-cyan-400" },
+    { type: "skills",   label: "Skills",    color: "text-green-600 dark:text-green-400" },
+    { type: "powers",   label: "Powers",    color: "text-purple-600 dark:text-purple-400" },
+    { type: "hooks",    label: "Hooks",     color: "text-amber-600 dark:text-amber-400" },
+    { type: "commands", label: "Commands",  color: "text-blue-600 dark:text-blue-400" },
+    { type: "rules",    label: "Rules",     color: "text-indigo-600 dark:text-indigo-400" },
+    { type: "agents",   label: "Agents",    color: "text-rose-600 dark:text-rose-400" },
+    { type: "mcp",      label: "MCP",        color: "text-cyan-600 dark:text-cyan-400" },
+    { type: "packages", label: "Packages",   color: "text-violet-600 dark:text-violet-400" },
+    { type: "olafData", label: ".olaf/data", color: "text-teal-600 dark:text-teal-400" },
   ] as const;
 
   type SkillStatus = "new" | "installed" | "reinstall" | "outdated";
@@ -518,9 +538,31 @@
     {#if true}
       {@const showHome = wizardStore.installScope === "home" || wizardStore.installScope === "both"}
       {@const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath}
-      {@const toolCols = showHome ? (installPaths?.toolPaths ?? []) : []}
+      {@const allToolCols = installPaths?.toolPaths ?? []}
+      {@const toolCols = showHome ? allToolCols : []}
       {@const colCount = toolCols.length + (showRepo ? 1 : 0)}
     <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+      <!-- Repo-only tool selector: which tools to install for in the repo -->
+      {#if showRepo && !showHome && allToolCols.length > 0}
+        <div class="px-3 py-2 bg-gray-50 dark:bg-gray-800/80 border-b border-gray-200 dark:border-gray-700">
+          <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Install for tools (repo-scoped):</p>
+          <div class="flex flex-wrap gap-3">
+            {#each allToolCols as tp}
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={selectedTools.has(tp.tool)}
+                  onchange={() => {
+                    const next = new Set(selectedTools);
+                    if (next.has(tp.tool)) next.delete(tp.tool); else next.add(tp.tool);
+                    selectedTools = next;
+                  }}
+                  class="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600"
+                />
+                <span class="text-xs text-gray-700 dark:text-gray-300">{tp.tool}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
+      {/if}
       <div class="overflow-x-auto">
         <table class="w-full text-xs">
           <thead>
@@ -730,7 +772,121 @@
       </div>
     {/if}
 
-    <!-- 5. SKILLS PER COMPETENCY -->    <div class="space-y-3">
+    <!-- COMMANDS detail -->
+    {#if allCommands.length > 0}
+      <div class="border border-blue-200 dark:border-blue-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 flex items-center gap-2">
+          <span class="text-sm">💬</span>
+          <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Commands</p>
+          <span class="text-xs text-blue-500 dark:text-blue-400 ml-auto">Slash commands / workflows</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allCommands as cmd}
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{cmd}</span>
+              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">+ new</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- RULES detail -->
+    {#if allRules.length > 0}
+      <div class="border border-indigo-200 dark:border-indigo-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 flex items-center gap-2">
+          <span class="text-sm">📏</span>
+          <p class="text-sm font-medium text-indigo-800 dark:text-indigo-200">Rules</p>
+          <span class="text-xs text-indigo-500 dark:text-indigo-400 ml-auto">Always-on steering / instructions</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allRules as rule}
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{rule}</span>
+              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400">+ new</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- HOOKS detail -->
+    {#if allHooks.length > 0}
+      <div class="border border-amber-200 dark:border-amber-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 flex items-center gap-2">
+          <span class="text-sm">🪝</span>
+          <p class="text-sm font-medium text-amber-800 dark:text-amber-200">Hooks</p>
+          <span class="text-xs text-amber-500 dark:text-amber-400 ml-auto">Kiro automation hooks</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allHooks as hook}
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{hook}</span>
+              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">+ new</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- AGENTS detail -->
+    {#if allAgents.length > 0}
+      <div class="border border-rose-200 dark:border-rose-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-rose-50 dark:bg-rose-900/20 flex items-center gap-2">
+          <span class="text-sm">🤖</span>
+          <p class="text-sm font-medium text-rose-800 dark:text-rose-200">Agents</p>
+          <span class="text-xs text-rose-500 dark:text-rose-400 ml-auto">Custom agent definitions</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allAgents as agent}
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{agent}</span>
+              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400">+ new</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- PACKAGES detail -->
+    {#if allPackages.length > 0 && settingsStore.isArtifactEnabled("packages")}
+      <div class="border border-violet-200 dark:border-violet-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-violet-50 dark:bg-violet-900/20 flex items-center gap-2">
+          <span class="text-sm">📦</span>
+          <p class="text-sm font-medium text-violet-800 dark:text-violet-200">Packages</p>
+          <span class="text-xs text-violet-500 dark:text-violet-400 ml-auto">Claude plugins → ~/.claude/plugins/ · Kiro packages → ~/.kiro/packages/</span>
+        </div>
+        <div class="p-3 space-y-1">
+          {#each allPackages as pkg}
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{pkg}</span>
+              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400">+ new</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- OLAF DATA detail -->
+    {#if hasOlafData}
+      <div class="border border-teal-200 dark:border-teal-800 rounded-lg overflow-hidden">
+        <div class="px-3 py-2 bg-teal-50 dark:bg-teal-900/20 flex items-center gap-2">
+          <span class="text-sm">🗂</span>
+          <p class="text-sm font-medium text-teal-800 dark:text-teal-200">.olaf/data</p>
+          <span class="text-xs text-teal-500 dark:text-teal-400 ml-auto">Copied to repo · .olaf/work/ added to .gitignore</span>
+        </div>
+        <div class="p-3">
+          <p class="text-xs text-gray-500 dark:text-gray-400">
+            Knowledge base folders (product/, practices/, people/, project/) from the registry will be merged into
+            <span class="font-mono">{wizardStore.repoPath || "your repo"}/.olaf/data/</span>.
+            Empty or placeholder-only folders are skipped.
+          </p>
+        </div>
+      </div>
+    {/if}
+
+    <!-- 5. SKILLS PER COMPETENCY -->
+    <div class="space-y-3">
       {#each allCompetencies as comp}
         {@const detail = componentsStore.competencyDetails[comp.id]}
         {#if detail && detail.skills.length > 0}

@@ -1,4 +1,5 @@
 // Types matching Rust models (camelCase)
+import { settingsStore } from "./settingsStore.svelte";
 
 export interface CollectionEntry {
   id: string;
@@ -25,6 +26,7 @@ export interface CompetencyDetail {
   agents: string[];
   mcpServers: string[];
   systems: string[];
+  packages: string[];
 }
 
 export interface McpServerDef {
@@ -156,6 +158,9 @@ function createComponentsStore() {
       const comps: ResolvedComponent[] = [];
       const seen = new Set<string>();
 
+      // Which artifact types are enabled in settings
+      const enabled = settingsStore.enabledArtifacts;
+
       for (const compId of this.resolvedCompetencyIds) {
         const detail = competencyDetails[compId];
         if (!detail) continue;
@@ -172,19 +177,36 @@ function createComponentsStore() {
           });
         };
 
-        for (const s of detail.skills ?? [])      addComp(s, "skill",     "skills");
-        for (const p of detail.powers ?? [])      addComp(p, "power",     "powers");
-        for (const r of detail.rules ?? [])       addComp(r, "rule",      "rules");
-        for (const h of detail.hooks ?? [])       addComp(h, "hook",      "hooks");
-        for (const c of detail.commands ?? [])    addComp(c, "command",   "commands");
-        for (const a of detail.agents ?? [])      addComp(a, "agent",     "agents");
-        for (const m of detail.mcpServers ?? [])  addComp(m, "mcpServer", "mcpservers");
-        for (const s of detail.systems ?? []) {
-          // For systems, source_path carries the repo URL from the manifest
-          const sysEntry = mergedCatalog?.systems.find(sys => sys.id === s);
-          if (sysEntry && !seen.has(`system:${s}`)) {
-            seen.add(`system:${s}`);
-            comps.push({ id: s, componentType: "system", sourcePath: sysEntry.repo });
+        if (enabled.has("skills"))     for (const s of detail.skills ?? [])     addComp(s, "skill",     "skills");
+        if (enabled.has("powers"))     for (const p of detail.powers ?? [])     addComp(p, "power",     "powers");
+        if (enabled.has("rules"))      for (const r of detail.rules ?? [])      addComp(r, "rule",      "rules");
+        if (enabled.has("hooks"))      for (const h of detail.hooks ?? [])      addComp(h, "hook",      "hooks");
+        if (enabled.has("commands"))   for (const c of detail.commands ?? [])   addComp(c, "command",   "commands");
+        if (enabled.has("agents"))     for (const a of detail.agents ?? [])     addComp(a, "agent",     "agents");
+        if (enabled.has("mcpServers")) for (const m of detail.mcpServers ?? []) addComp(m, "mcpServer", "mcpservers");
+        if (enabled.has("packages"))   for (const p of detail.packages ?? [])   addComp(p, "package",   "packages");
+
+        if (enabled.has("systems")) {
+          for (const s of detail.systems ?? []) {
+            const sysEntry = mergedCatalog?.systems.find(sys => sys.id === s);
+            if (sysEntry && !seen.has(`system:${s}`)) {
+              seen.add(`system:${s}`);
+              comps.push({ id: s, componentType: "system", sourcePath: sysEntry.repo });
+            }
+          }
+        }
+
+        // OlafData: driven by settings, not competency flag.
+        // Emitted once per source repo (deduplicated by sourceRepo).
+        if (enabled.has("olafData") && sourceRepo) {
+          const key = `olafData:${sourceRepo}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            comps.push({
+              id: compId,
+              componentType: "olafData",
+              sourcePath: `${sourceRepo}/.olaf`,
+            });
           }
         }
       }

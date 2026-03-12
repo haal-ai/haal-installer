@@ -83,7 +83,10 @@ impl RepoManager {
     ///
     /// Priority: seed repo wins on conflict (highest priority).
     /// Additional repos are processed lowest-priority first (order in repos-manifest).
-    pub fn build_merged_catalog(&self, seed_local_path: &Path) -> Result<MergedCatalog, HaalError> {
+    ///
+    /// When `include_test_branches` is false (default), repos whose branch name
+    /// starts with "test" are silently skipped.
+    pub fn build_merged_catalog(&self, seed_local_path: &Path, include_test_branches: bool) -> Result<MergedCatalog, HaalError> {
         // Load additional repos from seed's repos-manifest.json
         let repos_manifest_path = seed_local_path.join("repos-manifest.json");
         let extra_repos: Vec<RepoSpec> = if repos_manifest_path.exists() {
@@ -100,6 +103,11 @@ impl RepoManager {
 
         // Clone/pull extra repos first (lower priority)
         for (i, spec) in extra_repos.iter().enumerate() {
+            // Skip test branches unless the developer flag is on
+            if !include_test_branches && spec.branch.starts_with("test") {
+                eprintln!("INFO: Skipping registry {}/{} (test branch)", spec.repo, spec.branch);
+                continue;
+            }
             match self.clone_or_pull(&spec.repo, &spec.branch, spec.base_url.as_deref()) {
                 Ok(path) => sources.push((path, i as u32)),
                 Err(e) => {
