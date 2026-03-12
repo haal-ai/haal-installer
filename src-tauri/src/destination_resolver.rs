@@ -79,8 +79,17 @@ impl DestinationResolver {
     // -----------------------------------------------------------------------
     // Skills
     // -----------------------------------------------------------------------
-    // Home: ~/.kiro/skills/<id>/  (and ~/.agents/skills/<id>/ for non-Kiro tools)
-    // Repo: <repo>/.kiro/skills/<id>/  +  <repo>/.agents/skills/<id>/
+    // Home paths (per tool):
+    //   Kiro        → ~/.kiro/skills/<id>/
+    //   Copilot     → ~/.github/skills/<id>/
+    //   Claude Code → ~/.claude/skills/<id>/
+    //   Cursor / Windsurf / others → ~/.agents/skills/<id>/  (agentskills.io standard)
+    //
+    // Repo paths (written for all selected tools, deduplicated):
+    //   .kiro/skills/<id>/    (Kiro IDE + CLI)
+    //   .claude/skills/<id>/  (Claude Code)
+    //   .agents/skills/<id>/  (Windsurf, Cursor, and agentskills.io-compatible tools)
+    // -----------------------------------------------------------------------
 
     fn resolve_skill(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
         let mut actions = Vec::new();
@@ -88,33 +97,46 @@ impl DestinationResolver {
         let src = &comp.source_path;
 
         if self.scope == InstallScope::Home || self.scope == InstallScope::Both {
+            // Deduplicate: multiple tools may map to the same home path
+            let mut seen_dests = std::collections::HashSet::new();
             for tool in &self.selected_tools {
                 let dest = self.skill_home_path(tool, id);
-                actions.push(InstallAction {
-                    component_id: id.clone(),
-                    op: InstallOp::CopyDir { src: src.clone(), dest },
-                });
+                if seen_dests.insert(dest.clone()) {
+                    actions.push(InstallAction {
+                        component_id: id.clone(),
+                        op: InstallOp::CopyDir { src: src.clone(), dest },
+                    });
+                }
             }
         }
 
         if self.scope == InstallScope::Repo || self.scope == InstallScope::Both {
             if let Some(repo) = &self.repo_path {
-                // .kiro/skills/<id>/ for Kiro
-                actions.push(InstallAction {
-                    component_id: id.clone(),
-                    op: InstallOp::CopyDir {
-                        src: src.clone(),
-                        dest: repo.join(".kiro").join("skills").join(id),
-                    },
+                let has_kiro    = self.selected_tools.iter().any(|t| t.to_lowercase().contains("kiro"));
+                let has_claude  = self.selected_tools.iter().any(|t| t.to_lowercase().contains("claude"));
+                let has_agents  = self.selected_tools.iter().any(|t| {
+                    let tl = t.to_lowercase();
+                    tl.contains("cursor") || tl.contains("windsurf") || tl.contains("copilot")
                 });
-                // .agents/skills/<id>/ for other tools
-                actions.push(InstallAction {
-                    component_id: id.clone(),
-                    op: InstallOp::CopyDir {
-                        src: src.clone(),
-                        dest: repo.join(".agents").join("skills").join(id),
-                    },
-                });
+
+                if has_kiro {
+                    actions.push(InstallAction {
+                        component_id: id.clone(),
+                        op: InstallOp::CopyDir { src: src.clone(), dest: repo.join(".kiro").join("skills").join(id) },
+                    });
+                }
+                if has_claude {
+                    actions.push(InstallAction {
+                        component_id: id.clone(),
+                        op: InstallOp::CopyDir { src: src.clone(), dest: repo.join(".claude").join("skills").join(id) },
+                    });
+                }
+                if has_agents {
+                    actions.push(InstallAction {
+                        component_id: id.clone(),
+                        op: InstallOp::CopyDir { src: src.clone(), dest: repo.join(".agents").join("skills").join(id) },
+                    });
+                }
             }
         }
 
@@ -125,10 +147,12 @@ impl DestinationResolver {
         let tool_lower = tool.to_lowercase();
         if tool_lower.contains("kiro") {
             self.home_dir.join(".kiro").join("skills").join(id)
-        } else if tool_lower.contains("copilot") || tool_lower.contains("vs code") {
-            self.home_dir.join(".github").join("copilot").join(id)
+        } else if tool_lower.contains("copilot") {
+            self.home_dir.join(".github").join("skills").join(id)
+        } else if tool_lower.contains("claude") {
+            self.home_dir.join(".claude").join("skills").join(id)
         } else {
-            // Cursor, Windsurf, Claude Code etc.
+            // Cursor, Windsurf, and agentskills.io-compatible tools
             self.home_dir.join(".agents").join("skills").join(id)
         }
     }
