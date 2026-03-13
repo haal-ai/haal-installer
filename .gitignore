@@ -23,3 +23,6 @@ Thumbs.db
 # Signing keys (never commit private keys!)
 docs/keys.txt
 *.key
+
+# Local copy of haal-skills repo (not a submodule)
+haal-skills/
