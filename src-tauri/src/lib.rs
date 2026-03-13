@@ -1,5 +1,7 @@
 pub mod adapters;
 pub mod checksum_validator;
+pub mod competency_expander;
+pub mod competency_loader;
 pub mod config_manager;
 pub mod conflict_detector;
 pub mod content_hasher;
@@ -1130,54 +1132,30 @@ async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
     };
     let catalog = initialize_catalog(Some(seed_url), None).await?;
 
-    // Resolve competency details and build component list
-    let cache_root = SelfInstaller::haal_home().join("cache").join("repos");
-    let _repo_mgr = RepoManager::new(cache_root);
-    let reg_mgr = RegistryManager::new(
-        profile.seed_url.clone(),
-        SelfInstaller::haal_home().join("cache").join("manifests"),
-    );
-
+    // Resolve competency details and build component list using CompetencyLoader (v2 pipeline)
     let mut components: Vec<models::ResolvedComponent> = Vec::new();
-    let seen = &mut std::collections::HashSet::new();
 
     for comp_id in &profile.competency_ids {
-        // Find the competency entry in the merged catalog
-        let entry = catalog.competencies.iter().find(|c| c.id == *comp_id);
-        let source_path = catalog.competency_sources.get(comp_id).cloned()
+        // Find the registry root for this competency from the merged catalog sources
+        let registry_root = catalog.competency_sources.get(comp_id).cloned()
             .unwrap_or_default();
 
+        // Find the competency entry to get its manifest_url (relative path)
+        let entry = catalog.competencies.iter().find(|c| c.id == *comp_id);
         if let Some(entry) = entry {
-            match reg_mgr.fetch_competency(entry, &entry.manifest_url).await {
-                Ok(detail) => {
-                    let add = |id: &str, ctype: &str, subdir: &str, comps: &mut Vec<models::ResolvedComponent>, seen: &mut std::collections::HashSet<String>| {
-                        let key = format!("{ctype}:{id}");
-                        if seen.insert(key) {
-                            comps.push(models::ResolvedComponent {
-                                id: id.to_string(),
-                                component_type: match ctype {
-                                    "skill"     => models::ComponentType::Skill,
-                                    "power"     => models::ComponentType::Power,
-                                    "rule"      => models::ComponentType::Rule,
-                                    "hook"      => models::ComponentType::Hook,
-                                    "command"   => models::ComponentType::Command,
-                                    "agent"     => models::ComponentType::Agent,
-                                    "mcpServer" => models::ComponentType::McpServer,
-                                    _           => models::ComponentType::OlafData,
-                                },
-                                source_path: source_path.join(subdir).join(id),
-                            });
-                        }
-                    };
-                    for s in &detail.skills     { add(s, "skill",     "skills",     &mut components, seen); }
-                    for p in &detail.powers     { add(p, "power",     "powers",     &mut components, seen); }
-                    for r in &detail.rules      { add(r, "rule",      "rules",      &mut components, seen); }
-                    for h in &detail.hooks      { add(h, "hook",      "hooks",      &mut components, seen); }
-                    for c in &detail.commands   { add(c, "command",   "commands",   &mut components, seen); }
-                    for a in &detail.agents     { add(a, "agent",     "agents",     &mut components, seen); }
-                    for m in &detail.mcp_servers { add(m, "mcpServer", "mcpservers", &mut components, seen); }
+            // Build the absolute path to the competency JSON file
+            let competency_path = registry_root.join(&entry.manifest_url);
+            if competency_path.exists() {
+                match competency_expander::expand_competency(
+                    &competency_path,
+                    &registry_root,
+                    &profile.selected_tools,
+                ) {
+                    Ok(expanded) => components.extend(expanded),
+                    Err(e) => eprintln!("WARN: Could not expand competency '{comp_id}': {e}"),
                 }
-                Err(e) => eprintln!("WARN: Could not fetch competency {comp_id}: {e}"),
+            } else {
+                eprintln!("WARN: Competency file not found for '{comp_id}': {}", competency_path.display());
             }
         }
     }

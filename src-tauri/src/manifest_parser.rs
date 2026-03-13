@@ -113,9 +113,9 @@ mod tests {
                     "id": "code-review",
                     "name": "Code Review Skill",
                     "description": "AI-assisted code review",
-                    "component_type": "Skill",
+                    "componentType": "skill",
                     "path": "skills/code-review",
-                    "compatible_tools": ["kiro", "cursor"],
+                    "compatibleTools": ["kiro", "cursor"],
                     "dependencies": [],
                     "pinned": false,
                     "deprecated": false
@@ -126,7 +126,7 @@ mod tests {
                     "id": "starter-pack",
                     "name": "Starter Pack",
                     "description": "Essential skills",
-                    "component_ids": ["code-review"]
+                    "competencyIds": ["code-review"]
                 }
             ],
             "competencies": []
@@ -157,8 +157,8 @@ mod tests {
             "version": "  ",
             "components": [{
                 "id": "a", "name": "A", "description": "",
-                "component_type": "Skill", "path": "a",
-                "compatible_tools": [], "dependencies": [],
+                "componentType": "skill", "path": "a",
+                "compatibleTools": [], "dependencies": [],
                 "pinned": false, "deprecated": false
             }],
             "collections": [],
@@ -190,8 +190,8 @@ mod tests {
             "version": "1.0",
             "components": [{
                 "id": "", "name": "A", "description": "",
-                "component_type": "Skill", "path": "a",
-                "compatible_tools": [], "dependencies": [],
+                "componentType": "skill", "path": "a",
+                "compatibleTools": [], "dependencies": [],
                 "pinned": false, "deprecated": false
             }],
             "collections": [],
@@ -209,8 +209,8 @@ mod tests {
             "version": "1.0",
             "components": [{
                 "id": "x", "name": "  ", "description": "",
-                "component_type": "Skill", "path": "a",
-                "compatible_tools": [], "dependencies": [],
+                "componentType": "skill", "path": "a",
+                "compatibleTools": [], "dependencies": [],
                 "pinned": false, "deprecated": false
             }],
             "collections": [],
@@ -236,9 +236,10 @@ mod tests {
         let repo_root = Path::new("/home/user/repos/haal-skills");
         let manifest = ManifestParser::parse_with_root(&json, repo_root).unwrap();
 
+        let expected = repo_root.join("skills/code-review");
         assert_eq!(
             manifest.components[0].path,
-            "/home/user/repos/haal-skills/skills/code-review"
+            expected.to_string_lossy().as_ref()
         );
     }
 
@@ -268,7 +269,7 @@ mod tests {
             "components": [],
             "collections": [{
                 "id": "c1", "name": "C1", "description": "d",
-                "component_ids": []
+                "competencyIds": []
             }],
             "competencies": []
         })
@@ -286,7 +287,7 @@ mod tests {
             "collections": [],
             "competencies": [{
                 "id": "comp1", "name": "Comp1", "description": "d",
-                "component_ids": [], "config_files": []
+                "manifestUrl": "https://example.com/comp1.json"
             }]
         })
         .to_string();

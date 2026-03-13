@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 use crate::checksum_validator::ChecksumValidator;
 use crate::conflict_detector::ConflictDetector;
-use crate::errors::{FileSystemError, HaalError, IntegrityError, ValidationError};
+use crate::errors::{FileSystemError, HaalError, IntegrityError, NetworkError, ValidationError};
 use crate::models::{Component, ComponentFailure, Destination, OperationResult};
 use crate::rollback_manager::RollbackManager;
 use crate::traits::{ProgressReporter, ToolAdapter};

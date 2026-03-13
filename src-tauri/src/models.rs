@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,8 @@ pub struct HaalManifest {
     pub competencies: Vec<CompetencyEntry>,
     #[serde(default)]
     pub systems: Vec<SystemEntry>,
+    #[serde(default)]
+    pub competency_schema_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +63,51 @@ pub struct CompetencyDetail {
     pub systems: Vec<String>,
     #[serde(default)]
     pub packages: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// CompetencyV2 data models (schema version 2)
+// ---------------------------------------------------------------------------
+
+/// Tool-agnostic artifacts shared across all selected tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompetencyShared {
+    #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub mcpservers: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<String>,
+    #[serde(default)]
+    pub systems: Vec<String>,
+    #[serde(default)]
+    pub olafdata: Vec<String>,
+}
+
+/// Tool-specific artifact bundle (rules, commands, hooks, and optionally powers for kiro).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompetencyToolBundle {
+    #[serde(default)]
+    pub powers: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub commands: Vec<String>,
+    #[serde(default)]
+    pub hooks: Vec<String>,
+}
+
+/// Canonical internal model for a competency, regardless of on-disk schema version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompetencyV2 {
+    pub name: String,
+    pub description: String,
+    pub schema_version: Option<u32>,
+    pub shared: Option<CompetencyShared>,
+    pub tools: Option<HashMap<String, CompetencyToolBundle>>,
 }
 
 // ---------------------------------------------------------------------------

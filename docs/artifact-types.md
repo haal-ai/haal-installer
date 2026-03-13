@@ -57,11 +57,11 @@ Summary of install locations:
 |---|---|---|
 | Kiro | `~/.kiro/steering/<id>.md` | `<repo>/.kiro/steering/<id>.md` |
 | Cursor | `~/.cursor/rules/<id>.mdc` | `<repo>/.cursor/rules/<id>.mdc` |
-| Copilot | `~/.copilot/instructions/<id>.instructions.md` | `<repo>/.github/instructions/<id>.instructions.md` |
+| Copilot | appended to `~/.copilot/copilot-instructions.md` | `<repo>/.github/instructions/<id>.instructions.md` |
 | Windsurf | appended to `~/.codeium/windsurf/global_rules.md` | `<repo>/.windsurf/rules/<id>.md` |
-| Claude Code | appended to `~/.claude/CLAUDE.md` | appended to `<repo>/AGENTS.md` |
+| Claude Code | `~/.claude/rules/<filename>.md` | `<repo>/.claude/rules/<filename>.md` |
 
-Copilot rules are always repo-scoped. Windsurf and Claude Code global rules are appended to a shared file rather than stored individually.
+Copilot global rules are appended to a single shared file. Windsurf global rules are also appended to a shared file. Claude Code stores individual rule files.
 
 ---
 
@@ -78,7 +78,7 @@ Summary of install locations:
 | Kiro | `~/.kiro/steering/<id>.md` (inclusion: manual) | `<repo>/.kiro/steering/<id>.md` |
 | Cursor | `~/.cursor/commands/<id>.md` | `<repo>/.cursor/commands/<id>.md` |
 | Copilot | — | `<repo>/.github/prompts/<id>.prompt.md` |
-| Windsurf | — | `<repo>/.windsurf/workflows/<id>.md` |
+| Windsurf | `~/.codeium/windsurf/global_workflows/` | `<repo>/.windsurf/workflows/<id>.md` |
 | Claude Code | `~/.claude/commands/<id>.md` | `<repo>/.claude/commands/<id>.md` |
 
 Note: Kiro has no native command system. A steering file with `inclusion: manual` frontmatter appears in the `/` slash command menu. Windsurf calls commands "workflows". Copilot commands are always repo-scoped.

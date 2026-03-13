@@ -1,6 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use crate::errors::{HaalError, ValidationError};
 use crate::models::{ComponentType, InstallScope, McpServerDef, ResolvedComponent};
+
+/// Rejects any path that contains a `..` component to prevent path traversal attacks.
+fn validate_no_traversal(path: &Path) -> Result<(), HaalError> {
+    for component in path.components() {
+        if component == Component::ParentDir {
+            return Err(HaalError::Validation(ValidationError {
+                message: format!("Path traversal detected in '{}'", path.display()),
+                field: None,
+            }));
+        }
+    }
+    Ok(())
+}
 
 /// A single file-system operation to perform during install.
 #[derive(Debug, Clone)]
@@ -53,6 +67,11 @@ impl DestinationResolver {
     }
 
     fn resolve_one(&self, comp: &ResolvedComponent) -> Vec<InstallAction> {
+        // Reject paths containing `..` to prevent path traversal attacks.
+        if let Err(e) = validate_no_traversal(&comp.source_path) {
+            eprintln!("Rejected component '{}': {}", comp.id, e);
+            return Vec::new();
+        }
         // Resolve the actual on-disk path — the frontend may omit the subfolder
         // (e.g. `rules/test-rule-kiro` instead of `rules/kiro/test-rule-kiro/`)
         let resolved = ResolvedComponent {
@@ -902,5 +921,95 @@ impl DestinationResolver {
             }
         }
         src.to_path_buf() // fall back to original even if not found
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use super::validate_no_traversal;
+    use proptest::prelude::*;
+
+    // -----------------------------------------------------------------------
+    // Property 8: Path Traversal Rejection
+    // Validates: Requirements 6.1, 6.2, 6.3
+    // -----------------------------------------------------------------------
+    proptest! {
+        #[test]
+        fn prop_path_traversal_rejection(
+            segments in prop::collection::vec("[a-z][a-z0-9]{0,10}", 1..5),
+        ) {
+            // Path without .. should be accepted
+            let clean_path: std::path::PathBuf = segments.iter().collect();
+            prop_assert!(validate_no_traversal(&clean_path).is_ok());
+
+            // Path with .. should be rejected
+            let mut traversal_segments = segments.clone();
+            traversal_segments.insert(1.min(traversal_segments.len()), "..".to_string());
+            let traversal_path: std::path::PathBuf = traversal_segments.iter().collect();
+            prop_assert!(validate_no_traversal(&traversal_path).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use crate::models::{ComponentType, InstallScope, ResolvedComponent};
+
+    use super::{validate_no_traversal, DestinationResolver};
+
+    // -----------------------------------------------------------------------
+    // validate_no_traversal unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn path_with_dotdot_is_rejected() {
+        let path = Path::new("rules/../../../etc/passwd");
+        let result = validate_no_traversal(path);
+        assert!(result.is_err(), "expected path with '..' to be rejected");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Path traversal detected"),
+            "error message should mention path traversal, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn path_without_dotdot_is_accepted() {
+        let path = Path::new("rules/repo/kiro/my-rule");
+        let result = validate_no_traversal(path);
+        assert!(result.is_ok(), "expected clean path to be accepted, got: {:?}", result);
+    }
+
+    #[test]
+    fn path_traversal_does_not_abort_other_components() {
+        let resolver = DestinationResolver::new(
+            std::path::PathBuf::from("/tmp/home"),
+            None,
+            InstallScope::Home,
+            vec!["kiro".to_string()],
+        );
+
+        let bad_comp = ResolvedComponent {
+            id: "evil".to_string(),
+            source_path: std::path::PathBuf::from("rules/../../../etc/passwd"),
+            component_type: ComponentType::Rule,
+        };
+
+        let good_comp = ResolvedComponent {
+            id: "good-rule".to_string(),
+            source_path: std::path::PathBuf::from("rules/repo/kiro/good-rule"),
+            component_type: ComponentType::Rule,
+        };
+
+        // The bad component should return empty vec without panicking
+        let bad_actions = resolver.resolve_one(&bad_comp);
+        assert!(bad_actions.is_empty(), "traversal component should produce no actions");
+
+        // The resolver itself should still be usable for other components
+        // (resolve_one on good_comp won't panic — it may return empty if path doesn't exist,
+        // but the important thing is no panic/abort)
+        let _ = resolver.resolve_one(&good_comp); // must not panic
     }
 }
