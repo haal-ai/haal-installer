@@ -1205,36 +1205,57 @@ async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
             .unwrap_or_default();
 
         if let Some(entry) = entry {
-            match reg_mgr.fetch_competency(entry, &entry.manifest_url).await {
-                Ok(detail) => {
-                    let add = |id: &str, ctype: &str, subdir: &str, comps: &mut Vec<models::ResolvedComponent>, seen: &mut std::collections::HashSet<String>| {
-                        let key = format!("{ctype}:{id}");
-                        if seen.insert(key) {
-                            comps.push(models::ResolvedComponent {
-                                id: id.to_string(),
-                                component_type: match ctype {
-                                    "skill"     => models::ComponentType::Skill,
-                                    "power"     => models::ComponentType::Power,
-                                    "rule"      => models::ComponentType::Rule,
-                                    "hook"      => models::ComponentType::Hook,
-                                    "command"   => models::ComponentType::Command,
-                                    "agent"     => models::ComponentType::Agent,
-                                    "mcpServer" => models::ComponentType::McpServer,
-                                    _           => models::ComponentType::OlafData,
-                                },
-                                source_path: source_path.join(subdir).join(id),
-                            });
-                        }
-                    };
-                    for s in &detail.skills     { add(s, "skill",     "skills",     &mut components, seen); }
-                    for p in &detail.powers     { add(p, "power",     "powers",     &mut components, seen); }
-                    for r in &detail.rules      { add(r, "rule",      "rules",      &mut components, seen); }
-                    for h in &detail.hooks      { add(h, "hook",      "hooks",      &mut components, seen); }
-                    for c in &detail.commands   { add(c, "command",   "commands",   &mut components, seen); }
-                    for a in &detail.agents     { add(a, "agent",     "agents",     &mut components, seen); }
-                    for m in &detail.mcp_servers { add(m, "mcpServer", "mcpservers", &mut components, seen); }
+            // Try local repo cache first (fast, no network) — same logic as the
+            // Tauri command `fetch_competency`.
+            let detail = {
+                let local = source_path.join(&entry.manifest_url);
+                if local.exists() {
+                    std::fs::read_to_string(&local).ok()
+                        .and_then(|c| parse_competency_json(&c).ok())
+                } else {
+                    None
                 }
-                Err(e) => eprintln!("WARN: Could not fetch competency {comp_id}: {e}"),
+            };
+
+            let detail = match detail {
+                Some(d) => d,
+                None => {
+                    // Fall back to registry manager (remote → cache → local dev)
+                    let base = source_path.to_string_lossy().to_string();
+                    match reg_mgr.fetch_competency(entry, &base).await {
+                        Ok(d) => d,
+                        Err(e) => { eprintln!("WARN: Could not fetch competency {comp_id}: {e}"); continue; }
+                    }
+                }
+            };
+
+            {
+                let add = |id: &str, ctype: &str, subdir: &str, comps: &mut Vec<models::ResolvedComponent>, seen: &mut std::collections::HashSet<String>| {
+                    let key = format!("{ctype}:{id}");
+                    if seen.insert(key) {
+                        comps.push(models::ResolvedComponent {
+                            id: id.to_string(),
+                            component_type: match ctype {
+                                "skill"     => models::ComponentType::Skill,
+                                "power"     => models::ComponentType::Power,
+                                "rule"      => models::ComponentType::Rule,
+                                "hook"      => models::ComponentType::Hook,
+                                "command"   => models::ComponentType::Command,
+                                "agent"     => models::ComponentType::Agent,
+                                "mcpServer" => models::ComponentType::McpServer,
+                                _           => models::ComponentType::OlafData,
+                            },
+                            source_path: source_path.join(subdir).join(id),
+                        });
+                    }
+                };
+                for s in &detail.skills     { add(s, "skill",     "skills",     &mut components, seen); }
+                for p in &detail.powers     { add(p, "power",     "powers",     &mut components, seen); }
+                for r in &detail.rules      { add(r, "rule",      "rules",      &mut components, seen); }
+                for h in &detail.hooks      { add(h, "hook",      "hooks",      &mut components, seen); }
+                for c in &detail.commands   { add(c, "command",   "commands",   &mut components, seen); }
+                for a in &detail.agents     { add(a, "agent",     "agents",     &mut components, seen); }
+                for m in &detail.mcp_servers { add(m, "mcpServer", "mcpservers", &mut components, seen); }
             }
         }
     }

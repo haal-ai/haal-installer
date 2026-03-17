@@ -117,8 +117,12 @@
     <div class="mb-6 p-4 rounded-xl border {fail === 0 ? 'border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-900/20' : 'border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20'} flex items-center gap-4">
       <span class="text-lg">{fail === 0 ? "✅" : "⚠️"}</span>
       <p class="flex-1 text-sm font-medium {fail === 0 ? 'text-green-800 dark:text-green-200' : 'text-amber-800 dark:text-amber-200'}">
-        {ok} component{ok !== 1 ? "s" : ""} updated{fail > 0 ? `, ${fail} failed` : " successfully"}.
-        Restart your AI tools to pick up the changes.
+        {#if ok === 0 && fail === 0}
+          Your install is up to date.
+        {:else}
+          {ok} component{ok !== 1 ? "s" : ""} updated{fail > 0 ? `, ${fail} failed` : " successfully"}.
+          Restart your AI tools to pick up the changes.
+        {/if}
       </p>
       <button onclick={dismissQuickUpdate} class="text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">Dismiss</button>
     </div>
