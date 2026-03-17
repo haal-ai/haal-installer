@@ -1,6 +1,7 @@
 <script lang="ts">
   import { _ } from "svelte-i18n";
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWindow } from "@tauri-apps/api/window";
   import Header from "./lib/components/Header.svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import WizardFlow from "./lib/components/WizardFlow.svelte";
@@ -25,6 +26,11 @@
   function handleNavigate(view: string) {
     activeView = view;
   }
+
+  // Handle close-window event dispatched by ExecuteStep after install completes
+  window.addEventListener("close-window", () => {
+    getCurrentWindow().close();
+  });
 
   // Check self-installation status on mount
   async function checkSelfInstall() {

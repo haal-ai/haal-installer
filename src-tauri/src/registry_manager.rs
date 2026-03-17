@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::errors::{FileSystemError, HaalError, NetworkError};
 use crate::models::{CompetencyDetail, CompetencyEntry, HaalManifest};
+use crate::parse_competency_json;
 
 /// Default registry URL — points directly to the HAAL manifest JSON.
 pub const DEFAULT_REGISTRY_URL: &str =
@@ -151,7 +152,7 @@ impl RegistryManager {
             let candidate = dir.join("haal-skills").join(manifest_url.replace('/', std::path::MAIN_SEPARATOR_STR));
             if candidate.exists() {
                 let content = std::fs::read_to_string(&candidate).ok()?;
-                return serde_json::from_str(&content).ok();
+                return parse_competency_json(&content).ok();
             }
             dir = dir.parent()?;
         }
@@ -179,11 +180,19 @@ impl RegistryManager {
             }));
         }
 
-        resp.json::<CompetencyDetail>().await.map_err(|e| {
+        resp.text().await.map_err(|e| {
             HaalError::Network(NetworkError {
-                message: format!("Failed to parse competency JSON: {e}"),
+                message: format!("Failed to read competency response: {e}"),
                 url: Some(url.to_string()),
                 status_code: None,
+            })
+        }).and_then(|text| {
+            parse_competency_json(&text).map_err(|e| {
+                HaalError::Network(NetworkError {
+                    message: format!("Failed to parse competency JSON: {e}"),
+                    url: Some(url.to_string()),
+                    status_code: None,
+                })
             })
         })
     }

@@ -66,7 +66,7 @@ impl ToolAdapter for CursorAdapter {
         if let Some(home) = dirs::home_dir() {
             dests.push(Destination {
                 tool_name: self.tool_name().to_string(),
-                path: home.join(".cursor").join("extensions"),
+                path: home.join(".agents").join("skills"),
                 enabled: true,
             });
         }

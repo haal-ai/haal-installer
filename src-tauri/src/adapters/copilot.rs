@@ -56,10 +56,10 @@ impl ToolAdapter for CopilotAdapter {
     fn default_destinations(&self) -> Vec<Destination> {
         let mut dests = Vec::new();
         if let Some(home) = dirs::home_dir() {
-            // Skills/agents go to .github/copilot/
+            // Skills/agents go to .github/skills/ (matches DestinationResolver::skill_home_path)
             dests.push(Destination {
                 tool_name: self.tool_name().to_string(),
-                path: home.join(".github").join("copilot"),
+                path: home.join(".github").join("skills"),
                 enabled: true,
             });
         }

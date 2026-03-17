@@ -202,6 +202,15 @@
     wizardStore.nextStep();
   }
 
+  function handleStartOver() {
+    wizardStore.reset();
+    progressStore.reset();
+  }
+
+  function handleClose() {
+    window.dispatchEvent(new CustomEvent("close-window"));
+  }
+
   startExecution();
 </script>
 
@@ -332,12 +341,18 @@
       {/if}
     </div>
 
-    <div class="flex justify-end">
+    <div class="flex justify-between">
       <button
-        onclick={handleDone}
+        onclick={handleStartOver}
+        class="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+      >
+        ← Start over
+      </button>
+      <button
+        onclick={handleClose}
         class="px-5 py-2.5 text-sm font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 transition-colors"
       >
-        {$_("wizard.execute.continue")}
+        Close
       </button>
     </div>
   {/if}

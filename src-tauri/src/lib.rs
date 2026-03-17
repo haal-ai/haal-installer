@@ -1,7 +1,5 @@
 pub mod adapters;
 pub mod checksum_validator;
-pub mod competency_expander;
-pub mod competency_loader;
 pub mod config_manager;
 pub mod conflict_detector;
 pub mod content_hasher;
@@ -330,7 +328,7 @@ async fn fetch_competency(
     if let Some(path) = local_path {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-        return serde_json::from_str::<CompetencyDetail>(&content)
+        return parse_competency_json(&content)
             .map_err(|e| format!("Cannot parse {}: {e}", path.display()));
     }
 
@@ -347,6 +345,62 @@ async fn fetch_competency(
         .fetch_competency(&entry, &base_url)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Parses a competency JSON string, handling both v1 (flat) and v2 (shared/tools) schemas.
+pub(crate) fn parse_competency_json(content: &str) -> Result<CompetencyDetail, String> {
+    // Try v2 first: check for schemaVersion field
+    if let Ok(v2) = serde_json::from_str::<models::CompetencyV2>(content) {
+        if v2.schema_version == Some(2) {
+            return Ok(flatten_v2_to_detail(&v2));
+        }
+    }
+    // Fall back to v1 (flat CompetencyDetail)
+    serde_json::from_str::<CompetencyDetail>(content).map_err(|e| e.to_string())
+}
+
+/// Flattens a v2 competency (shared + tools) into a flat CompetencyDetail
+/// that the frontend expects.
+pub(crate) fn flatten_v2_to_detail(v2: &models::CompetencyV2) -> CompetencyDetail {
+    let shared = v2.shared.as_ref();
+    let mut skills: Vec<String> = shared.map(|s| s.skills.clone()).unwrap_or_default();
+    let mut mcp_servers: Vec<String> = shared.map(|s| s.mcpservers.clone()).unwrap_or_default();
+    let mut agents: Vec<String> = shared.map(|s| s.agents.clone()).unwrap_or_default();
+    let mut systems: Vec<String> = shared.map(|s| s.systems.clone()).unwrap_or_default();
+    let mut powers: Vec<String> = Vec::new();
+    let mut rules: Vec<String> = Vec::new();
+    let mut commands: Vec<String> = Vec::new();
+    let mut hooks: Vec<String> = Vec::new();
+
+    // Merge all tool bundles — deduplicate across tools
+    if let Some(tools) = &v2.tools {
+        for bundle in tools.values() {
+            for p in &bundle.powers   { if !powers.contains(p)   { powers.push(p.clone()); } }
+            for r in &bundle.rules    { if !rules.contains(r)    { rules.push(r.clone()); } }
+            for c in &bundle.commands { if !commands.contains(c) { commands.push(c.clone()); } }
+            for h in &bundle.hooks    { if !hooks.contains(h)    { hooks.push(h.clone()); } }
+        }
+    }
+
+    // Deduplicate shared lists too (just in case)
+    skills.dedup();
+    mcp_servers.dedup();
+    agents.dedup();
+    systems.dedup();
+
+    CompetencyDetail {
+        name: v2.name.clone(),
+        description: v2.description.clone(),
+        skills,
+        powers,
+        hooks,
+        commands,
+        rules,
+        agents,
+        mcp_servers,
+        systems,
+        packages: Vec::new(),
+    }
 }
 
 /// Reads an MCP server definition from a locally cloned registry repo.
@@ -687,6 +741,7 @@ fn scan_installed_with_status(
         ("claude-code", home.join(".claude").join("skills")),
         ("cursor",      home.join(".cursor").join("skills")),
         ("windsurf",    home.join(".windsurf").join("extensions")),
+        ("copilot",     home.join(".github").join("skills")),
     ];
     for (tool, dir) in &skill_install_dirs {
         if !dir.exists() { continue; }
@@ -1132,30 +1187,54 @@ async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
     };
     let catalog = initialize_catalog(Some(seed_url), None).await?;
 
-    // Resolve competency details and build component list using CompetencyLoader (v2 pipeline)
+    // Resolve competency details and build component list
+    let cache_root = SelfInstaller::haal_home().join("cache").join("repos");
+    let _repo_mgr = RepoManager::new(cache_root);
+    let reg_mgr = RegistryManager::new(
+        profile.seed_url.clone(),
+        SelfInstaller::haal_home().join("cache").join("manifests"),
+    );
+
     let mut components: Vec<models::ResolvedComponent> = Vec::new();
+    let seen = &mut std::collections::HashSet::new();
 
     for comp_id in &profile.competency_ids {
-        // Find the registry root for this competency from the merged catalog sources
-        let registry_root = catalog.competency_sources.get(comp_id).cloned()
+        // Find the competency entry in the merged catalog
+        let entry = catalog.competencies.iter().find(|c| c.id == *comp_id);
+        let source_path = catalog.competency_sources.get(comp_id).cloned()
             .unwrap_or_default();
 
-        // Find the competency entry to get its manifest_url (relative path)
-        let entry = catalog.competencies.iter().find(|c| c.id == *comp_id);
         if let Some(entry) = entry {
-            // Build the absolute path to the competency JSON file
-            let competency_path = registry_root.join(&entry.manifest_url);
-            if competency_path.exists() {
-                match competency_expander::expand_competency(
-                    &competency_path,
-                    &registry_root,
-                    &profile.selected_tools,
-                ) {
-                    Ok(expanded) => components.extend(expanded),
-                    Err(e) => eprintln!("WARN: Could not expand competency '{comp_id}': {e}"),
+            match reg_mgr.fetch_competency(entry, &entry.manifest_url).await {
+                Ok(detail) => {
+                    let add = |id: &str, ctype: &str, subdir: &str, comps: &mut Vec<models::ResolvedComponent>, seen: &mut std::collections::HashSet<String>| {
+                        let key = format!("{ctype}:{id}");
+                        if seen.insert(key) {
+                            comps.push(models::ResolvedComponent {
+                                id: id.to_string(),
+                                component_type: match ctype {
+                                    "skill"     => models::ComponentType::Skill,
+                                    "power"     => models::ComponentType::Power,
+                                    "rule"      => models::ComponentType::Rule,
+                                    "hook"      => models::ComponentType::Hook,
+                                    "command"   => models::ComponentType::Command,
+                                    "agent"     => models::ComponentType::Agent,
+                                    "mcpServer" => models::ComponentType::McpServer,
+                                    _           => models::ComponentType::OlafData,
+                                },
+                                source_path: source_path.join(subdir).join(id),
+                            });
+                        }
+                    };
+                    for s in &detail.skills     { add(s, "skill",     "skills",     &mut components, seen); }
+                    for p in &detail.powers     { add(p, "power",     "powers",     &mut components, seen); }
+                    for r in &detail.rules      { add(r, "rule",      "rules",      &mut components, seen); }
+                    for h in &detail.hooks      { add(h, "hook",      "hooks",      &mut components, seen); }
+                    for c in &detail.commands   { add(c, "command",   "commands",   &mut components, seen); }
+                    for a in &detail.agents     { add(a, "agent",     "agents",     &mut components, seen); }
+                    for m in &detail.mcp_servers { add(m, "mcpServer", "mcpservers", &mut components, seen); }
                 }
-            } else {
-                eprintln!("WARN: Competency file not found for '{comp_id}': {}", competency_path.display());
+                Err(e) => eprintln!("WARN: Could not fetch competency {comp_id}: {e}"),
             }
         }
     }

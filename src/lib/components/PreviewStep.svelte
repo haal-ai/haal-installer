@@ -219,14 +219,12 @@
 
   type SkillStatus = "new" | "installed" | "reinstall" | "outdated";
 
-  // Map selectedTools (display names) → scan keys used in installedAtHome
+  // Map selectedTools (display names) → scan keys used in installedAtHome.
+  // Includes ALL selected tools, even those with no installs yet (they'll show as "new").
   let activeHomeScanKeys = $derived.by(() => {
-    return homeTools.filter(key => {
-      const displayName = installPaths?.toolPaths.find(t =>
-        t.tool.toLowerCase().replace(/\s/g, "-") === key || t.tool.toLowerCase() === key
-      )?.tool;
-      return displayName ? selectedTools.has(displayName) : selectedTools.has(key);
-    });
+    return (installPaths?.toolPaths ?? [])
+      .filter(tp => selectedTools.has(tp.tool))
+      .map(tp => tp.tool.toLowerCase().replace(/\s/g, "-"));
   });
 
   // Status maps keyed by skill — home has per-tool status (selected tools only), repo has a single status
@@ -290,12 +288,21 @@
     return { newSkills, existingSkills, newPowers, existingPowers };
   });
 
-  // Columns shown in the skill table — one per selected tool (home) + optional repo column
+  // Columns shown in the skill table — one per selected tool (home) + optional repo column.
+  // Uses selectedTools (not activeHomeScanKeys) so tools with zero installs still get a column.
   let skillTableCols = $derived.by(() => {
     const showHome = wizardStore.installScope === "home" || wizardStore.installScope === "both";
     const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath;
+    const homeCols = showHome
+      ? (installPaths?.toolPaths ?? [])
+          .filter(tp => selectedTools.has(tp.tool))
+          .map(tp => ({
+            key: tp.tool.toLowerCase().replace(/\s/g, "-"),
+            label: tp.tool,
+          }))
+      : [];
     return [
-      ...(showHome ? activeHomeScanKeys.map(t => ({ key: t, label: t })) : []),
+      ...homeCols,
       ...(showRepo ? [{ key: "repo", label: "Repo" }] : []),
     ];
   });
@@ -329,7 +336,7 @@
     // 1. Fetch all competency details in parallel (skip already cached)
     const toFetch = allCompetencies.filter(c => !componentsStore.competencyDetails[c.id]);
     const sources = componentsStore.mergedCatalog?.competencySources ?? {};
-    await Promise.allSettled(toFetch.map(comp =>
+    const results = await Promise.allSettled(toFetch.map(comp =>
       invoke("fetch_competency", {
         competencyId: comp.id,
         manifestUrl: comp.manifestUrl,
@@ -868,12 +875,12 @@
     {/if}
 
     <!-- OLAF DATA detail -->
-    {#if hasOlafData}
+    {#if hasOlafData && wizardStore.installScope !== "home"}
       <div class="border border-teal-200 dark:border-teal-800 rounded-lg overflow-hidden">
         <div class="px-3 py-2 bg-teal-50 dark:bg-teal-900/20 flex items-center gap-2">
           <span class="text-sm">🗂</span>
           <p class="text-sm font-medium text-teal-800 dark:text-teal-200">.olaf/data</p>
-          <span class="text-xs text-teal-500 dark:text-teal-400 ml-auto">Copied to repo · .olaf/work/ added to .gitignore</span>
+          <span class="text-xs text-teal-500 dark:text-teal-400 ml-auto">Will be merged into repo · .olaf/work/ added to .gitignore</span>
         </div>
         <div class="p-3">
           <p class="text-xs text-gray-500 dark:text-gray-400">

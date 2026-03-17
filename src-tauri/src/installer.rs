@@ -124,9 +124,8 @@ impl Installer {
     }
 
     fn copy_dir(&self, src: &Path, dest: &Path) -> Result<(), HaalError> {
-        if dest.exists() && !self.reinstall_all {
-            return Ok(()); // skip existing
-        }
+        // Always overwrite — install should bring the destination in sync with the registry.
+        // (reinstall_all only controls UI labelling, not whether we copy.)
         if dest.exists() {
             std::fs::remove_dir_all(dest).map_err(|e| fs_err(e, dest))?;
         }
@@ -135,9 +134,7 @@ impl Installer {
     }
 
     fn copy_file(&self, src: &Path, dest: &Path) -> Result<(), HaalError> {
-        if dest.exists() && !self.reinstall_all {
-            return Ok(());
-        }
+        // Always overwrite — same rationale as copy_dir.
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| fs_err(e, parent))?;
         }
