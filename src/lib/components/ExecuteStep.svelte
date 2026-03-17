@@ -346,7 +346,7 @@
         onclick={handleStartOver}
         class="px-4 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
       >
-        ← Start over
+        ← Another install
       </button>
       <button
         onclick={handleClose}
