@@ -1,9 +1,5 @@
 # HAAL Installer
 
-> **Work in progress — as of March 2026. Not ready for production use.**
->
-> The installer is functional in development mode but has not been packaged or released yet. APIs, registry formats, and component structures may change without notice.
-
 A cross-platform desktop application for installing, updating, and managing AI coding tool components (skills, prompts, rules, commands, MCP servers, agentic systems) across tools like GitHub Copilot, Cursor, Claude Code, Kiro, and Windsurf.
 
 ## Download
@@ -26,8 +22,7 @@ Instead of manually cloning repos and copying files, HAAL Installer gives you a 
 - **Connect** — authenticate to GitHub (public or enterprise) via OAuth or Personal Access Token
 - **Choose** — browse and select collections or competencies from one or more registries
 - **Preview** — see exactly what will change before anything runs, per tool and per component type
-- **Execute** — runs the operations with live progress
-- **Done** — summary of what was installed
+- **Execute** — runs the operations with live progress and completion summary
 
 It supports multiple registries simultaneously (team, division, enterprise, open-source) with a clear merge and override model. See [docs/multi-registry.md](docs/multi-registry.md).
 
