@@ -11,10 +11,14 @@
   let installedAtHome = $state<Record<string, Set<string>>>({});
   let installedAtRepo = $state<Set<string>>(new Set());
   let installedPowers = $state<Set<string>>(new Set());
+  let expandedCompetencies = $state<Set<string>>(new Set());
   let installPaths = $state<{ toolPaths: { tool: string; skillsPath: string }[]; powersPath: string } | null>(null);
   let repoScanPending = $state(false);
   let repoError = $state("");
   let selectedTools = $state<Set<string>>(new Set());
+  // Nearby git repos detected from CWD (scanned 2 levels deep)
+  let nearbyRepos = $state<string[]>([]);
+  let launchDir = $state("");
   // MCP server definitions loaded lazily by id
   let mcpDefs = $state<Record<string, McpServerDef>>({});
   // id → "up-to-date" | "outdated" (absent = not installed / unknown)
@@ -161,6 +165,7 @@
   let hasOlafData = $derived(settingsStore.isArtifactEnabled("olafData"));
 
   let reinstallAll = $derived(wizardStore.reinstallAll);
+  let cleanInstall = $derived(wizardStore.cleanInstall);
 
   // Which tools support which component types
   // Returns count or null (= not applicable / tool not selected)
@@ -188,7 +193,7 @@
 
   function typeRepoCount(type: string): number | null {
     if (!settingsStore.isArtifactEnabled(type as any)) return null;
-    const hasRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath;
+    const hasRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && wizardStore.repoPaths.length > 0;
     if (!hasRepo) return null;
     switch (type) {
       case "skills":   return allSkills.length;
@@ -292,7 +297,7 @@
   // Uses selectedTools (not activeHomeScanKeys) so tools with zero installs still get a column.
   let skillTableCols = $derived.by(() => {
     const showHome = wizardStore.installScope === "home" || wizardStore.installScope === "both";
-    const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath;
+    const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && wizardStore.repoPaths.length > 0;
     const homeCols = showHome
       ? (installPaths?.toolPaths ?? [])
           .filter(tp => selectedTools.has(tp.tool))
@@ -309,7 +314,8 @@
 
   let skillsInstallPaths = $derived.by(() => {
     const s = wizardStore.installScope;
-    const repo = wizardStore.repoPath ? `${wizardStore.repoPath}/.kiro/skills` : null;
+    const repoPaths = wizardStore.repoPaths;
+    const repo = repoPaths.length > 0 ? `${repoPaths[0]}/.kiro/skills` : null;
     const activeToolPaths = installPaths?.toolPaths.filter(t => selectedTools.has(t.tool)) ?? [];
     if (s === "home") return activeToolPaths.map(t => ({ label: t.tool, path: t.skillsPath }));
     if (s === "repo") return repo ? [{ label: "Repo", path: repo }] : [];
@@ -319,12 +325,12 @@
     ];
   });
 
-  // Re-scan repo whenever repoPath changes
+  // Re-scan repo whenever repoPaths changes (scan first repo for status display)
   $effect(() => {
-    const p = wizardStore.repoPath;
-    if (!p) { installedAtRepo = new Set(); return; }
+    const paths = wizardStore.repoPaths;
+    if (paths.length === 0) { installedAtRepo = new Set(); return; }
     repoScanPending = true;
-    invoke<Record<string, string[]>>("scan_installed_at", { basePath: p })
+    invoke<Record<string, string[]>>("scan_installed_at", { basePath: paths[0] })
       .then(raw => { installedAtRepo = new Set(raw["repo"] ?? []); })
       .catch(() => { installedAtRepo = new Set(); })
       .finally(() => { repoScanPending = false; });
@@ -368,13 +374,25 @@
           .filter(tool => settingsStore.isToolEnabled(tool as any))
       );
     }
-    if (rawCwd.status === "fulfilled" && rawCwd.value && !wizardStore.repoPath) {
-      // Only pre-fill CWD if it's actually a git repo
-      try {
-        await invoke("validate_git_repo", { path: rawCwd.value });
-        wizardStore.setRepoPath(rawCwd.value);
-      } catch {
-        // CWD is not a git repo — leave blank, user must pick manually
+    if (rawCwd.status === "fulfilled" && rawCwd.value) {
+      launchDir = rawCwd.value;
+      if (wizardStore.repoPaths.length === 0) {
+        // Scan CWD and 2 levels deep for git repos
+        try {
+          const repos = await invoke<string[]>("scan_nearby_git_repos", {
+            root: rawCwd.value,
+            maxDepth: 2,
+          });
+          nearbyRepos = repos;
+          if (repos.length > 0) {
+            // Auto-select all found repos and default to "both"
+            wizardStore.setRepoPaths(repos);
+            wizardStore.setInstallScope("both");
+          }
+          // If no repos found, scope stays "home" (the default)
+        } catch {
+          // Scan failed — leave blank, user must pick manually
+        }
       }
     }
 
@@ -427,11 +445,33 @@
     if (selected && typeof selected === "string") {
       repoError = "";
       try {
+        // If the folder itself is a git repo, add it
         await invoke("validate_git_repo", { path: selected });
-        wizardStore.setRepoPath(selected);
-      } catch (e: any) {
-        repoError = String(e);
-        wizardStore.setRepoPath("");
+        if (!wizardStore.repoPaths.includes(selected)) {
+          wizardStore.setRepoPaths([...wizardStore.repoPaths, selected]);
+        }
+        // Also add to nearbyRepos for display
+        if (!nearbyRepos.includes(selected)) {
+          nearbyRepos = [...nearbyRepos, selected];
+          launchDir = launchDir || selected;
+        }
+      } catch {
+        // Not a git repo — scan inside for child repos
+        try {
+          const repos = await invoke<string[]>("scan_nearby_git_repos", {
+            root: selected,
+            maxDepth: 2,
+          });
+          if (repos.length > 0) {
+            nearbyRepos = [...new Set([...nearbyRepos, ...repos])];
+            launchDir = selected;
+            wizardStore.setRepoPaths([...new Set([...wizardStore.repoPaths, ...repos])]);
+          } else {
+            repoError = "No git repositories found in this folder (searched 2 levels deep).";
+          }
+        } catch (e: any) {
+          repoError = String(e);
+        }
       }
     }
   }
@@ -447,9 +487,10 @@
     wizardStore.setInstallRequest({
       components: resolvedComponents,
       scope: wizardStore.installScope,
-      repoPath: wizardStore.repoPath || null,
+      repoPaths: wizardStore.repoPaths,
       selectedTools: Array.from(selectedTools),
       reinstallAll: wizardStore.reinstallAll,
+      cleanInstall: wizardStore.cleanInstall,
     });
     wizardStore.nextStep();
   }
@@ -502,8 +543,34 @@
 
       <!-- Repo folder picker (only when repo/both) -->
       {#if wizardStore.installScope !== "home"}
+        <!-- Detected nearby repos -->
+        {#if nearbyRepos.length > 0}
+          <div class="space-y-1.5">
+            <p class="text-xs font-medium text-gray-500 dark:text-gray-400">
+              Git repositories found near <span class="font-mono">{launchDir.split(/[\\/]/).pop()}/</span>:
+            </p>
+            <div class="max-h-32 overflow-y-auto space-y-1 rounded border border-gray-200 dark:border-gray-700 p-1.5">
+              {#each nearbyRepos as repo}
+                {@const isSelected = wizardStore.repoPaths.includes(repo)}
+                {@const shortPath = repo.replace(/\\/g, "/").split("/").slice(-2).join("/")}
+                <button
+                  onclick={() => { repoError = ""; wizardStore.toggleRepoPath(repo); }}
+                  class="w-full text-left px-2 py-1.5 text-xs rounded transition-colors flex items-center gap-2
+                    {isSelected
+                      ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
+                      : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+                >
+                  <span class="flex-shrink-0">{isSelected ? '☑' : '☐'}</span>
+                  <span class="font-mono truncate" title={repo}>{shortPath}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Manual folder picker -->
         <div class="flex items-center gap-2">
-          <input type="text" readonly value={wizardStore.repoPath || "No folder selected"}
+          <input type="text" readonly value={wizardStore.repoPaths.length > 0 ? `${wizardStore.repoPaths.length} repo(s) selected` : "No folder selected"}
             class="flex-1 text-xs font-mono px-2 py-1.5 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-500 dark:text-gray-400 truncate min-w-0"
           />
           <button onclick={pickRepoFolder}
@@ -515,12 +582,42 @@
           <p class="text-xs text-blue-500">Scanning…</p>
         {:else if repoError}
           <p class="text-xs text-red-600 dark:text-red-400">⛔ {repoError}</p>
-        {:else if !wizardStore.repoPath}
-          <p class="text-xs text-amber-600 dark:text-amber-400">⚠ Select a git repository folder</p>
+        {:else if wizardStore.repoPaths.length === 0 && nearbyRepos.length === 0}
+          <p class="text-xs text-amber-600 dark:text-amber-400">⚠ No git repositories found nearby. Browse to select one.</p>
+        {:else if wizardStore.repoPaths.length === 0}
+          <p class="text-xs text-amber-600 dark:text-amber-400">⚠ Select at least one git repository</p>
         {/if}
       {/if}
 
+      <!-- No repos found hint — show when scope is home and we scanned -->
+      {#if wizardStore.installScope === "home" && nearbyRepos.length === 0 && launchDir}
+        <p class="text-xs text-gray-400 dark:text-gray-500">
+          💡 No git repos found near launch folder. Switch to "Repo only" or "Both" to browse for one.
+        </p>
+      {/if}
+
       <!-- Tool checkboxes moved to matrix table header below -->
+
+      <!-- Optional artifact types — opt-in toggles -->
+      <div class="pt-2 border-t border-gray-200 dark:border-gray-700">
+        <p class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Include optional extras:</p>
+        <div class="flex flex-wrap gap-x-4 gap-y-1.5">
+          {#each [
+            { key: "powers",     label: "⚡ Kiro Powers",    hint: "Always-active context for Kiro" },
+            { key: "mcpServers", label: "🔌 MCP Servers",    hint: "Tool config for AI coding tools" },
+            { key: "olafData",   label: "📚 .olaf/data",     hint: "Knowledge base in each repo" },
+          ] as opt}
+            {@const enabled = settingsStore.isArtifactEnabled(opt.key as any)}
+            <label class="flex items-center gap-1.5 cursor-pointer group" title={opt.hint}>
+              <input type="checkbox" checked={enabled}
+                onchange={() => settingsStore.toggleArtifact(opt.key as any)}
+                class="w-3.5 h-3.5 rounded border-gray-300 dark:border-gray-600 text-blue-600"
+              />
+              <span class="text-xs text-gray-700 dark:text-gray-300 group-hover:text-blue-600 dark:group-hover:text-blue-400">{opt.label}</span>
+            </label>
+          {/each}
+        </div>
+      </div>
 
       <!-- Resolved paths (compact, muted) -->
       {#if (wizardStore.installScope === "home" || wizardStore.installScope === "both") && installPaths && installPaths.toolPaths.length > 0}
@@ -544,7 +641,7 @@
     <!-- SUMMARY MATRIX: rows = component types, columns = tools + repo -->
     {#if true}
       {@const showHome = wizardStore.installScope === "home" || wizardStore.installScope === "both"}
-      {@const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && !!wizardStore.repoPath}
+      {@const showRepo = (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && wizardStore.repoPaths.length > 0}
       {@const allToolCols = installPaths?.toolPaths ?? []}
       {@const toolCols = showHome ? allToolCols : []}
       {@const colCount = toolCols.length + (showRepo ? 1 : 0)}
@@ -596,7 +693,7 @@
                     <span class="text-xs">📁</span>
                     <span class="text-xs">Repo</span>
                     {#if !showHome}
-                      <span class="text-xs text-gray-400 dark:text-gray-500 font-normal">{wizardStore.repoPath?.split(/[\\/]/).pop() ?? ""}</span>
+                      <span class="text-xs text-gray-400 dark:text-gray-500 font-normal">{wizardStore.repoPaths.length} repo(s)</span>
                     {/if}
                   </span>
                 </th>
@@ -746,7 +843,7 @@
             </div>
             {#if wizardStore.installScope !== "home"}
               <p class="text-xs text-gray-400 dark:text-gray-500 mt-1.5">
-                + workspace configs in <span class="font-mono">{wizardStore.repoPath}</span>
+                + workspace configs in {wizardStore.repoPaths.length} repo(s)
               </p>
             {/if}
           </div>
@@ -885,7 +982,7 @@
         <div class="p-3">
           <p class="text-xs text-gray-500 dark:text-gray-400">
             Knowledge base folders (product/, practices/, people/, project/) from the registry will be merged into
-            <span class="font-mono">{wizardStore.repoPath || "your repo"}/.olaf/data/</span>.
+            <span class="font-mono">{wizardStore.repoPaths[0] || "your repo"}/.olaf/data/</span>.
             Empty or placeholder-only folders are skipped.
           </p>
         </div>
@@ -898,10 +995,21 @@
         {@const detail = componentsStore.competencyDetails[comp.id]}
         {#if detail && detail.skills.length > 0}
           <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-            <div class="px-3 py-2 bg-gray-50 dark:bg-gray-800/80 flex items-center justify-between">
+            <button
+              onclick={() => {
+                const next = new Set(expandedCompetencies);
+                if (next.has(comp.id)) next.delete(comp.id); else next.add(comp.id);
+                expandedCompetencies = next;
+              }}
+              class="w-full px-3 py-2 bg-gray-50 dark:bg-gray-800/80 flex items-center justify-between cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            >
               <p class="text-sm font-medium text-gray-800 dark:text-gray-200">{comp.name}</p>
-              <span class="text-xs text-gray-400 dark:text-gray-500">{detail.skills.length} skills</span>
-            </div>
+              <span class="flex items-center gap-2">
+                <span class="text-xs text-gray-400 dark:text-gray-500">{detail.skills.length} skills</span>
+                <span class="text-xs text-gray-400">{expandedCompetencies.has(comp.id) ? '▲' : '▼'}</span>
+              </span>
+            </button>
+            {#if expandedCompetencies.has(comp.id)}
             <div class="p-3">
               <!-- Column headers: skill name + one col per location -->
               {#if skillTableCols.length > 0}
@@ -946,6 +1054,7 @@
                 {/each}
               </div>
             </div>
+            {/if}
           </div>
         {/if}
       {/each}
@@ -1050,23 +1159,37 @@
     {/if}
 
     <div class="flex items-center justify-between">
-      <!-- Reinstall toggle -->
-      <div class="flex items-center gap-2">
-        <button
-          onclick={() => wizardStore.setReinstallAll(!reinstallAll)}
-          class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors {reinstallAll ? 'bg-orange-500' : 'bg-gray-300 dark:bg-gray-600'}"
-          role="switch" aria-checked={reinstallAll}
-        >
-          <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition {reinstallAll ? 'translate-x-4' : 'translate-x-0'}"></span>
-        </button>
-        <span class="text-xs text-gray-600 dark:text-gray-400">
-          Re-install all — <span class="text-gray-400 dark:text-gray-500">{reinstallAll ? "overwrite existing" : "skip existing"}</span>
-        </span>
+      <!-- Install mode toggles -->
+      <div class="flex items-center gap-4">
+        <div class="flex items-center gap-2">
+          <button
+            onclick={() => wizardStore.setReinstallAll(!reinstallAll)}
+            class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors {reinstallAll ? 'bg-orange-500' : 'bg-gray-300 dark:bg-gray-600'}"
+            role="switch" aria-checked={reinstallAll}
+          >
+            <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition {reinstallAll ? 'translate-x-4' : 'translate-x-0'}"></span>
+          </button>
+          <span class="text-xs text-gray-600 dark:text-gray-400">
+            Re-install all — <span class="text-gray-400 dark:text-gray-500">{reinstallAll ? "overwrite existing" : "skip existing"}</span>
+          </span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button
+            onclick={() => wizardStore.setCleanInstall(!cleanInstall)}
+            class="relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors {cleanInstall ? 'bg-red-500' : 'bg-gray-300 dark:bg-gray-600'}"
+            role="switch" aria-checked={cleanInstall}
+          >
+            <span class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition {cleanInstall ? 'translate-x-4' : 'translate-x-0'}"></span>
+          </button>
+          <span class="text-xs text-gray-600 dark:text-gray-400">
+            Clean install — <span class="text-gray-400 dark:text-gray-500">{cleanInstall ? "remove unselected skills" : "keep existing"}</span>
+          </span>
+        </div>
       </div>
       <button
         onclick={handleConfirm}
         disabled={
-          (wizardStore.installScope !== "home" && !wizardStore.repoPath) ||
+          (wizardStore.installScope !== "home" && wizardStore.repoPaths.length === 0) ||
           (wizardStore.installScope === "home" && selectedTools.size === 0)
         }
         class="px-5 py-2.5 text-sm font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"

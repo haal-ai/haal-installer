@@ -372,12 +372,16 @@ pub struct InstallRequest {
     /// Resolved components to install.
     pub components: Vec<ResolvedComponent>,
     pub scope: InstallScope,
-    /// Absolute path to the target repo (required for Repo/Both scope).
-    pub repo_path: Option<PathBuf>,
+    /// Absolute paths to the target repos (for Repo/Both scope).
+    #[serde(default)]
+    pub repo_paths: Vec<PathBuf>,
     /// Which tools to install to (e.g. ["Kiro", "Cursor"]).
     pub selected_tools: Vec<String>,
     /// If true, overwrite existing; if false, skip existing.
     pub reinstall_all: bool,
+    /// If true, remove skills/agents not in the current install set before installing.
+    #[serde(default)]
+    pub clean_install: bool,
 }
 
 /// Result of the install operation.
@@ -387,6 +391,10 @@ pub struct InstallResult {
     pub success: bool,
     pub components_succeeded: Vec<String>,
     pub components_failed: Vec<ComponentFailure>,
+    #[serde(default)]
+    pub cleaned_count: usize,
+    #[serde(default)]
+    pub cleaned_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

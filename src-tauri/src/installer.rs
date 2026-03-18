@@ -31,14 +31,65 @@ impl Installer {
 
     pub async fn install(&self, request: &InstallRequest) -> InstallResult {
         let home_dir = dirs::home_dir().unwrap_or_default();
-        let resolver = DestinationResolver::new(
-            home_dir,
-            request.repo_path.clone(),
-            request.scope.clone(),
-            request.selected_tools.clone(),
-        );
 
-        let actions = resolver.resolve(&request.components);
+        // Build actions: for multi-repo, run home once + each repo separately
+        let mut actions = Vec::new();
+        match request.scope {
+            crate::models::InstallScope::Home => {
+                let resolver = DestinationResolver::new(
+                    home_dir,
+                    None,
+                    crate::models::InstallScope::Home,
+                    request.selected_tools.clone(),
+                );
+                actions.extend(resolver.resolve(&request.components));
+            }
+            crate::models::InstallScope::Repo => {
+                for repo_path in &request.repo_paths {
+                    let resolver = DestinationResolver::new(
+                        home_dir.clone(),
+                        Some(repo_path.clone()),
+                        crate::models::InstallScope::Repo,
+                        request.selected_tools.clone(),
+                    );
+                    actions.extend(resolver.resolve(&request.components));
+                }
+            }
+            crate::models::InstallScope::Both => {
+                // Home part (once)
+                let resolver = DestinationResolver::new(
+                    home_dir.clone(),
+                    None,
+                    crate::models::InstallScope::Home,
+                    request.selected_tools.clone(),
+                );
+                actions.extend(resolver.resolve(&request.components));
+                // Repo part (per repo)
+                for repo_path in &request.repo_paths {
+                    let resolver = DestinationResolver::new(
+                        home_dir.clone(),
+                        Some(repo_path.clone()),
+                        crate::models::InstallScope::Repo,
+                        request.selected_tools.clone(),
+                    );
+                    actions.extend(resolver.resolve(&request.components));
+                }
+            }
+        }
+        // If clean_install, remove skill/agent dirs that aren't in the install set
+        let (cleaned_count, cleaned_names) = if request.clean_install {
+            self.emit_progress(InstallProgressEvent {
+                step: "Cleaning old skills…".to_string(),
+                percentage: 0,
+                current_component: None,
+                components_succeeded: vec![],
+                components_failed: vec![],
+            });
+            self.clean_old_skills(request, &actions)
+        } else {
+            (0, vec![])
+        };
+
         let total = actions.len().max(1);
 
         let mut succeeded: Vec<String> = Vec::new();
@@ -90,6 +141,8 @@ impl Installer {
             success: failed.is_empty(),
             components_succeeded: succeeded,
             components_failed: failed,
+            cleaned_count,
+            cleaned_names,
         }
     }
 
@@ -250,6 +303,75 @@ impl Installer {
         }
         writeln!(file, "{entry}").map_err(|e| fs_err(e, dest))?;
         Ok(())
+    }
+
+    /// Removes skill/agent directories that exist on disk but are NOT in the
+    /// current install set. Only cleans directories that HAAL manages (skills, agents).
+    fn clean_old_skills(&self, request: &InstallRequest, actions: &[InstallAction]) -> (usize, Vec<String>) {
+        // Collect all destination directories that will be written by this install
+        let mut keep_dirs: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+        for action in actions {
+            if let InstallOp::CopyDir { dest, .. } = &action.op {
+                keep_dirs.insert(dest.clone());
+            }
+        }
+
+        // Determine which skill/agent directories to scan for cleanup
+        let home_dir = dirs::home_dir().unwrap_or_default();
+        let mut dirs_to_clean: Vec<std::path::PathBuf> = Vec::new();
+
+        // Home directories (per tool)
+        if request.scope == crate::models::InstallScope::Home || request.scope == crate::models::InstallScope::Both {
+            for tool in &request.selected_tools {
+                let tl = tool.to_lowercase();
+                let base = if tl.contains("kiro") {
+                    home_dir.join(".kiro").join("skills")
+                } else if tl.contains("copilot") {
+                    home_dir.join(".github").join("skills")
+                } else if tl.contains("claude") {
+                    home_dir.join(".claude").join("skills")
+                } else {
+                    home_dir.join(".agents").join("skills")
+                };
+                if !dirs_to_clean.contains(&base) {
+                    dirs_to_clean.push(base);
+                }
+            }
+        }
+
+        // Repo directories
+        if request.scope == crate::models::InstallScope::Repo || request.scope == crate::models::InstallScope::Both {
+            for repo_path in &request.repo_paths {
+                for subdir in &[".kiro/skills", ".claude/skills", ".agents/skills"] {
+                    let base = repo_path.join(subdir);
+                    if !dirs_to_clean.contains(&base) {
+                        dirs_to_clean.push(base);
+                    }
+                }
+            }
+        }
+
+        // For each managed directory, remove children not in keep_dirs
+        let mut removed: Vec<String> = Vec::new();
+        for parent in &dirs_to_clean {
+            if !parent.is_dir() { continue; }
+            let Ok(entries) = std::fs::read_dir(parent) else { continue; };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() { continue; }
+                if !keep_dirs.contains(&path) {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        removed.push(name.to_string());
+                    }
+                    eprintln!("CLEAN: removing {}", path.display());
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+            }
+        }
+        removed.sort();
+        removed.dedup();
+        let count = removed.len();
+        (count, removed)
     }
 
     fn emit_progress(&self, event: InstallProgressEvent) {

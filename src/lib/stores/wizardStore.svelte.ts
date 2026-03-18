@@ -1,6 +1,6 @@
 import type { ResolvedComponent } from "./componentsStore.svelte";
 
-export type WizardStep = "connect" | "choose" | "preview" | "execute" | "done";
+export type WizardStep = "connect" | "choose" | "preview" | "execute";
 export type InstallScope = "home" | "repo" | "both";
 
 export interface SelectedComponent {
@@ -12,9 +12,10 @@ export interface SelectedComponent {
 export interface InstallRequest {
   components: ResolvedComponent[];
   scope: InstallScope;
-  repoPath: string | null;
+  repoPaths: string[];
   selectedTools: string[];
   reinstallAll: boolean;
+  cleanInstall: boolean;
 }
 
 function createWizardStore() {
@@ -25,8 +26,9 @@ function createWizardStore() {
   let registryUrl = $state<string>("");
   let isConnected = $state(false);
   let reinstallAll = $state(false);
+  let cleanInstall = $state(false);
   let installScope = $state<InstallScope>("home");
-  let repoPath = $state<string>("");
+  let repoPaths = $state<string[]>([]);
   let installRequest = $state<InstallRequest | null>(null);
 
   const steps: WizardStep[] = [
@@ -34,7 +36,6 @@ function createWizardStore() {
     "choose",
     "preview",
     "execute",
-    "done",
   ];
 
   return {
@@ -45,8 +46,9 @@ function createWizardStore() {
     get registryUrl() { return registryUrl; },
     get isConnected() { return isConnected; },
     get reinstallAll() { return reinstallAll; },
+    get cleanInstall() { return cleanInstall; },
     get installScope() { return installScope; },
-    get repoPath() { return repoPath; },
+    get repoPaths() { return repoPaths; },
     get installRequest() { return installRequest; },
     get currentStepIndex() { return steps.indexOf(currentStep); },
     get canGoBack() { return steps.indexOf(currentStep) > 0 && !isExecuting; },
@@ -90,8 +92,16 @@ function createWizardStore() {
     setRegistryUrl(url: string) { registryUrl = url; },
     setConnected(value: boolean) { isConnected = value; },
     setReinstallAll(value: boolean) { reinstallAll = value; },
+    setCleanInstall(value: boolean) { cleanInstall = value; },
     setInstallScope(value: InstallScope) { installScope = value; },
-    setRepoPath(value: string) { repoPath = value; },
+    setRepoPaths(value: string[]) { repoPaths = value; },
+    toggleRepoPath(path: string) {
+      if (repoPaths.includes(path)) {
+        repoPaths = repoPaths.filter(p => p !== path);
+      } else {
+        repoPaths = [...repoPaths, path];
+      }
+    },
     setInstallRequest(req: InstallRequest) { installRequest = req; },
 
     reset() {
@@ -101,9 +111,10 @@ function createWizardStore() {
       isExecuting = false;
       registryUrl = "";
       reinstallAll = false;
+      cleanInstall = false;
       isConnected = false;
       installScope = "home";
-      repoPath = "";
+      repoPaths = [];
       installRequest = null;
     },
   };

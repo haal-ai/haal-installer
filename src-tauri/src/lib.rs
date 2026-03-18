@@ -465,6 +465,55 @@ fn get_current_dir() -> String {
         .to_string()
 }
 
+/// Scans the given root directory (and up to `max_depth` levels of subdirectories)
+/// for folders that contain a `.git` directory. Returns the list of absolute paths.
+/// Skips hidden directories and common non-project folders (node_modules, target, etc.).
+#[tauri::command]
+fn scan_nearby_git_repos(root: String, max_depth: u32) -> Vec<String> {
+    let root_path = std::path::Path::new(&root);
+    if !root_path.is_dir() {
+        return Vec::new();
+    }
+    let mut repos = Vec::new();
+    scan_git_repos_recursive(root_path, 0, max_depth, &mut repos);
+    repos
+}
+
+fn scan_git_repos_recursive(dir: &std::path::Path, depth: u32, max_depth: u32, repos: &mut Vec<String>) {
+    // Check if this directory itself is a git repo
+    if dir.join(".git").exists() {
+        if let Some(s) = dir.to_str() {
+            repos.push(s.to_string());
+        }
+        // Don't recurse into a git repo looking for nested repos
+        return;
+    }
+    if depth >= max_depth {
+        return;
+    }
+    // Read children, skip hidden dirs and common non-project folders
+    let Ok(entries) = std::fs::read_dir(dir) else { return; };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') {
+            continue;
+        }
+        // Skip known non-project directories
+        if matches!(
+            name_str.as_ref(),
+            "node_modules" | "target" | "dist" | "build" | ".haal" | "__pycache__" | "venv" | ".venv"
+        ) {
+            continue;
+        }
+        scan_git_repos_recursive(&path, depth + 1, max_depth, repos);
+    }
+}
+
 /// Returns Ok(path) if the folder contains a .git directory, Err otherwise.
 #[tauri::command]
 fn validate_git_repo(path: String) -> Result<String, String> {
@@ -1136,7 +1185,11 @@ pub struct LastInstallProfile {
     pub selected_tools: Vec<String>,
     /// Install scope: "home" | "repo" | "both".
     pub scope: String,
-    /// Repo path (empty string if scope is "home").
+    /// Repo paths for multi-repo install.
+    #[serde(default)]
+    pub repo_paths: Vec<String>,
+    /// DEPRECATED: single repo path — kept for reading old profiles.
+    #[serde(default)]
     pub repo_path: String,
     /// ISO-8601 timestamp of the last install.
     pub installed_at: String,
@@ -1269,9 +1322,17 @@ async fn quick_update(app: tauri::AppHandle) -> Result<InstallResult, String> {
     let request = InstallRequest {
         components,
         scope,
-        repo_path: if profile.repo_path.is_empty() { None } else { Some(profile.repo_path.into()) },
+        repo_paths: {
+            let mut paths = profile.repo_paths.clone();
+            // Backward compat: old profiles only have repo_path
+            if paths.is_empty() && !profile.repo_path.is_empty() {
+                paths.push(profile.repo_path.clone());
+            }
+            paths.into_iter().map(|p| p.into()).collect()
+        },
         selected_tools: profile.selected_tools,
         reinstall_all: true,
+        clean_install: false,
     };
 
     let installer = Installer::new(app, true);
@@ -1311,6 +1372,7 @@ pub fn run() {
             scan_installed_powers,
             get_install_paths,
             get_current_dir,
+            scan_nearby_git_repos,
             validate_git_repo,
             detect_tools,
             check_updates,

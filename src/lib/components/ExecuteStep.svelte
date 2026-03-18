@@ -32,6 +32,8 @@
     success: boolean;
     componentsFailed: { componentId: string; error: string }[];
     componentsSucceeded: string[];
+    cleanedCount?: number;
+    cleanedNames?: string[];
   }
 
   // --- State ---
@@ -39,6 +41,8 @@
   let componentStatuses = $state<ComponentProgress[]>([]);
   let error = $state("");
   let completed = $state(false);
+  let cleanedCount = $state(0);
+  let cleanedNames = $state<string[]>([]);
   let unlistenFn = $state<UnlistenFn | null>(null);
 
   // --- Derived ---
@@ -57,7 +61,7 @@
     hook:      { label: "Hooks",       icon: "🪝", color: "text-amber-600 dark:text-amber-400",  destLabel: (r) => destForSkills(r) },
     command:   { label: "Commands",    icon: "⌨️", color: "text-blue-600 dark:text-blue-400",    destLabel: (r) => destForSkills(r) },
     rule:      { label: "Rules",       icon: "📋", color: "text-indigo-600 dark:text-indigo-400", destLabel: (r) => destForSkills(r) },
-    agent:     { label: "Agents",      icon: "🤖", color: "text-rose-600 dark:text-rose-400",    destLabel: (r) => r.repoPath ? `${r.repoPath}/.kiro/` : "~/.kiro/" },
+    agent:     { label: "Agents",      icon: "🤖", color: "text-rose-600 dark:text-rose-400",    destLabel: (r) => r.repoPaths.length > 0 ? `${r.repoPaths.length} repo(s)/.kiro/` : "~/.kiro/" },
   };
 
   function destForSkills(r: NonNullable<typeof wizardStore.installRequest>): string {
@@ -66,8 +70,8 @@
       if (r.selectedTools.length > 0) parts.push(`~/.${r.selectedTools[0].toLowerCase()}/skills/`);
       if (r.selectedTools.length > 1) parts.push(`+${r.selectedTools.length - 1} more`);
     }
-    if ((r.scope === "repo" || r.scope === "both") && r.repoPath) {
-      parts.push(`${r.repoPath}/.kiro/skills/`);
+    if ((r.scope === "repo" || r.scope === "both") && r.repoPaths.length > 0) {
+      parts.push(`${r.repoPaths.length} repo(s)/.kiro/skills/`);
     }
     return parts.join("  ·  ") || "~/.kiro/skills/";
   }
@@ -96,6 +100,14 @@
 
   let totalSucceeded = $derived(componentStatuses.filter(c => c.status === "succeeded").length);
   let totalFailed = $derived(componentStatuses.filter(c => c.status === "failed").length);
+
+  // Track which groups are expanded (collapsed by default)
+  let expandedGroups = $state<Set<string>>(new Set());
+  function toggleGroup(type: string) {
+    const next = new Set(expandedGroups);
+    if (next.has(type)) next.delete(type); else next.add(type);
+    expandedGroups = next;
+  }
 
   // --- Helpers ---
 
@@ -162,6 +174,8 @@
 
     try {
       const result = await invoke<OperationResult>("install_components_v2", { request: req });
+      cleanedCount = result.cleanedCount ?? 0;
+      cleanedNames = result.cleanedNames ?? [];
       componentStatuses = componentStatuses.map((cs) => {
         if (result.componentsSucceeded.includes(cs.id)) return { ...cs, status: "succeeded" as ComponentStatus };
         const failure = result.componentsFailed.find((f) => f.componentId === cs.id);
@@ -180,7 +194,7 @@
               competencyIds: wizardStore.selectedComponents.map(c => c.id),
               selectedTools: req.selectedTools,
               scope: req.scope,
-              repoPath: req.repoPath ?? "",
+              repoPaths: req.repoPaths ?? [],
               installedAt: new Date().toISOString(),
             },
           });
@@ -196,10 +210,6 @@
       wizardStore.setExecuting(false);
       if (unlistenFn) { unlistenFn(); unlistenFn = null; }
     }
-  }
-
-  function handleDone() {
-    wizardStore.nextStep();
   }
 
   function handleStartOver() {
@@ -253,39 +263,60 @@
     {#each groupedStatuses as group}
       {@const meta = TYPE_META[group.type] ?? { label: group.type, icon: "📦", color: "text-gray-600", destLabel: () => "" }}
       {@const req = wizardStore.installRequest}
+      {@const succeeded = group.items.filter(i => i.status === 'succeeded').length}
+      {@const failed = group.items.filter(i => i.status === 'failed').length}
+      {@const inProgress = group.items.filter(i => i.status === 'in-progress').length}
+      {@const isExpanded = expandedGroups.has(group.type)}
       <div class="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-        <!-- Group header -->
-        <div class="px-3 py-2 bg-gray-50 dark:bg-gray-800/80 flex items-center gap-2">
+        <!-- Group header (clickable to expand/collapse) -->
+        <button
+          onclick={() => toggleGroup(group.type)}
+          class="w-full px-3 py-2 bg-gray-50 dark:bg-gray-800/80 flex items-center gap-2 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors text-left"
+        >
+          <span class="text-[10px] text-gray-400 transition-transform {isExpanded ? 'rotate-90' : ''}">▶</span>
           <span class="text-sm">{meta.icon}</span>
           <span class="text-sm font-medium {meta.color}">{meta.label}</span>
-          <span class="text-xs text-gray-400 dark:text-gray-500 ml-auto font-mono truncate max-w-[60%] text-right">
+          <span class="text-xs text-gray-500 dark:text-gray-400">
+            {#if inProgress > 0}
+              <span class="text-blue-500">{succeeded + failed + inProgress}/{group.items.length}</span>
+            {:else if succeeded === group.items.length}
+              <span class="text-green-500">✓ {succeeded}</span>
+            {:else if failed > 0}
+              <span class="text-green-500">{succeeded}</span> · <span class="text-red-500">{failed} ✗</span>
+            {:else}
+              {group.items.length} pending
+            {/if}
+          </span>
+          <span class="text-xs text-gray-400 dark:text-gray-500 ml-auto font-mono truncate max-w-[50%] text-right">
             {req ? meta.destLabel(req) : ""}
           </span>
-        </div>
-        <!-- Items -->
-        <div class="divide-y divide-gray-100 dark:divide-gray-800">
-          {#each group.items as comp}
-            <div class="flex items-center gap-2.5 px-3 py-2">
-              <span class="w-2 h-2 rounded-full flex-shrink-0 {statusDot(comp.status)}"></span>
-              <span class="text-xs font-mono text-gray-800 dark:text-gray-200 flex-1 truncate">{comp.id}</span>
-              {#if comp.status === "in-progress"}
-                <svg class="w-3.5 h-3.5 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                </svg>
-              {:else if comp.status === "succeeded"}
-                <span class="text-xs text-green-600 dark:text-green-400 flex-shrink-0">✓</span>
-              {:else if comp.status === "failed"}
-                <span class="text-xs text-red-500 flex-shrink-0">✗</span>
-              {/if}
-            </div>
-            {#if comp.error}
-              <div class="px-3 pb-2 ml-4">
-                <p class="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-2 py-1">{comp.error}</p>
+        </button>
+        <!-- Items (collapsible) -->
+        {#if isExpanded}
+          <div class="divide-y divide-gray-100 dark:divide-gray-800">
+            {#each group.items as comp}
+              <div class="flex items-center gap-2.5 px-3 py-2">
+                <span class="w-2 h-2 rounded-full flex-shrink-0 {statusDot(comp.status)}"></span>
+                <span class="text-xs font-mono text-gray-800 dark:text-gray-200 flex-1 truncate">{comp.id}</span>
+                {#if comp.status === "in-progress"}
+                  <svg class="w-3.5 h-3.5 text-blue-500 animate-spin flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                  </svg>
+                {:else if comp.status === "succeeded"}
+                  <span class="text-xs text-green-600 dark:text-green-400 flex-shrink-0">✓</span>
+                {:else if comp.status === "failed"}
+                  <span class="text-xs text-red-500 flex-shrink-0">✗</span>
+                {/if}
               </div>
-            {/if}
-          {/each}
-        </div>
+              {#if comp.error}
+                <div class="px-3 pb-2 ml-4">
+                  <p class="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded px-2 py-1">{comp.error}</p>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>
@@ -313,6 +344,9 @@
           {totalFailed === 0
             ? `${totalSucceeded} component${totalSucceeded !== 1 ? "s" : ""} installed successfully`
             : `${totalSucceeded} succeeded, ${totalFailed} failed`}
+          {#if cleanedCount > 0}
+            <span class="font-normal text-gray-500 dark:text-gray-400"> · {cleanedCount} old skill{cleanedCount !== 1 ? "s" : ""} removed</span>
+          {/if}
         </span>
       </div>
       <div class="px-3 py-2 space-y-1 bg-white dark:bg-gray-900">
@@ -337,6 +371,11 @@
           <p class="text-xs text-green-700 dark:text-green-400">
             Restart your AI tools to pick up the new skills and settings.
           </p>
+          {#if cleanedCount > 0}
+            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              🧹 Removed: {cleanedNames.join(", ")}
+            </p>
+          {/if}
         </div>
       {/if}
     </div>

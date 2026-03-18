@@ -6,14 +6,14 @@
   import ChooseStep from "./ChooseStep.svelte";
   import PreviewStep from "./PreviewStep.svelte";
   import ExecuteStep from "./ExecuteStep.svelte";
-  import DoneStep from "./DoneStep.svelte";
 
   interface LastInstallProfile {
     seedUrl: string;
     competencyIds: string[];
     selectedTools: string[];
     scope: string;
-    repoPath: string;
+    repoPaths: string[];
+    repoPath?: string; // backward compat
     installedAt: string;
   }
 
@@ -28,7 +28,6 @@
     { id: "choose", labelKey: "wizard.steps.choose" },
     { id: "preview", labelKey: "wizard.steps.preview" },
     { id: "execute", labelKey: "wizard.steps.execute" },
-    { id: "done", labelKey: "wizard.steps.done" },
   ];
 
   let lastProfile = $state<LastInstallProfile | null>(null);
@@ -186,8 +185,6 @@
       <PreviewStep />
     {:else if wizardStore.currentStep === "execute"}
       <ExecuteStep />
-    {:else if wizardStore.currentStep === "done"}
-      <DoneStep />
     {/if}
   </div>
 
