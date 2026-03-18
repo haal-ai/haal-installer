@@ -164,12 +164,13 @@ fn check_gh_cli() -> serde_json::Value {
 }
 
 /// Launches `gh auth login` in a new terminal window so the user can authenticate.
+/// Uses `--web` to skip interactive prompts and go straight to browser-based device flow.
 /// Unsets GITHUB_TOKEN first so gh stores credentials rather than using the env var.
 #[tauri::command]
 fn launch_gh_auth_login() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     std::process::Command::new("cmd")
-        .args(["/c", "start", "cmd", "/k", "gh auth login"])
+        .args(["/c", "start", "cmd", "/k", "set GITHUB_TOKEN=&& set GH_TOKEN=&& gh auth login --web -h github.com -p https"])
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN")
         .spawn()
@@ -177,7 +178,7 @@ fn launch_gh_auth_login() -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     std::process::Command::new("osascript")
-        .args(["-e", "tell app \"Terminal\" to do script \"unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login\""])
+        .args(["-e", "tell app \"Terminal\" to do script \"unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login --web -h github.com -p https\""])
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN")
         .spawn()
@@ -185,7 +186,7 @@ fn launch_gh_auth_login() -> Result<(), String> {
 
     #[cfg(target_os = "linux")]
     std::process::Command::new("sh")
-        .args(["-c", "x-terminal-emulator -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login' || xterm -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login'"])
+        .args(["-c", "x-terminal-emulator -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login --web -h github.com -p https' || xterm -e 'unset GITHUB_TOKEN; unset GH_TOKEN; gh auth login --web -h github.com -p https'"])
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_TOKEN")
         .spawn()
