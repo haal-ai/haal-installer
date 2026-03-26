@@ -16,6 +16,7 @@
   let repoScanPending = $state(false);
   let repoError = $state("");
   let selectedTools = $state<Set<string>>(new Set());
+  let expandedCards = $state<Set<string>>(new Set());
   // Nearby git repos detected from CWD (scanned 2 levels deep)
   let nearbyRepos = $state<string[]>([]);
   let launchDir = $state("");
@@ -161,6 +162,172 @@
     }
     return list;
   });
+
+  /** Extract the tool slug from a registry-relative path.
+   *  commands/repo/copilot/file.md → "copilot"
+   *  rules/global/kiro/file.md    → "kiro"
+   *  hooks/kiro/my-hook            → "kiro"
+   *  agents/claude/my-agent         → "claude"
+   *  packages/claude/my-pkg         → "claude" */
+  function extractToolFromPath(path: string): string | null {
+    const segs = path.split("/");
+    if (segs.length < 3) return null;
+    const kind = segs[0];
+    // commands & rules have a scope segment: {kind}/{scope}/{tool}/{name}
+    if (kind === "commands" || kind === "rules") return segs[2] ?? null;
+    // hooks, agents, packages: {kind}/{tool}/{name}
+    return segs[1] ?? null;
+  }
+
+  /** Extract a human-readable name from a registry path.
+   *  commands/repo/copilot/haal-lint.md → "haal-lint"
+   *  rules/repo/windsurf/ts-standard.md → "ts-standard" */
+  function extractNameFromPath(path: string): string {
+    const last = path.split("/").pop() ?? path;
+    return last.replace(/\.md$/, "");
+  }
+
+  /** Extract the scope from a registry path (global or repo).
+   *  commands/repo/kiro/... → "repo"
+   *  rules/global/kiro/...  → "global"
+   *  hooks/kiro/...          → null (no scope segment) */
+  function extractScopeFromPath(path: string): "global" | "repo" | null {
+    const segs = path.split("/");
+    const kind = segs[0];
+    if (kind === "commands" || kind === "rules") {
+      const scope = segs[1];
+      if (scope === "global" || scope === "repo") return scope;
+    }
+    return null;
+  }
+
+  /** Filter artifact paths by the current install scope.
+   *  Home → only global/* paths
+   *  Repo → only repo/* paths
+   *  Both → all paths
+   *  Paths without scope (hooks/agents/packages) pass through. */
+  function filterByScope(items: string[]): string[] {
+    const scope = wizardStore.installScope;
+    if (scope === "both") return items;
+    return items.filter(path => {
+      const pathScope = extractScopeFromPath(path);
+      if (!pathScope) return true; // no scope in path → always show
+      if (scope === "home") return pathScope === "global";
+      if (scope === "repo") return pathScope === "repo";
+      return true;
+    });
+  }
+
+  /** Whether the current install scope includes home */
+  let scopeIncludesHome = $derived(wizardStore.installScope === "home" || wizardStore.installScope === "both");
+  /** Whether the current install scope includes repo */
+  let scopeIncludesRepo = $derived(
+    (wizardStore.installScope === "repo" || wizardStore.installScope === "both") && wizardStore.repoPaths.length > 0
+  );
+
+  /** Check if a display tool name (e.g. "Copilot") matches a path tool slug (e.g. "copilot") */
+  function toolMatchesSlug(displayName: string, slug: string): boolean {
+    return displayName.toLowerCase().replace(/\s/g, "-").startsWith(slug);
+  }
+
+  /** Build a grouped table: rows = unique artifact names, columns = tools that have it.
+   *  Returns { names: string[], toolMap: Map<name, Set<toolSlug>> } */
+  function groupByNameAndTool(items: string[]): { names: string[]; toolMap: Map<string, Set<string>> } {
+    const toolMap = new Map<string, Set<string>>();
+    const order: string[] = [];
+    for (const path of items) {
+      const name = extractNameFromPath(path);
+      const tool = extractToolFromPath(path);
+      if (!toolMap.has(name)) { toolMap.set(name, new Set()); order.push(name); }
+      if (tool) toolMap.get(name)!.add(tool);
+    }
+    return { names: order, toolMap };
+  }
+
+  /** Short destination path for a tool/artifact combo.
+   *  Used as column subtitle so users know where files end up. */
+  function destHint(type: "command" | "rule" | "hook" | "agent" | "package", toolSlug: string): string {
+    const scope = wizardStore.installScope;
+    const home = scope === "home" || scope === "both";
+    const repo = scope === "repo" || scope === "both";
+    const parts: string[] = [];
+    if (type === "command") {
+      if (home) {
+        const m: Record<string, string> = {
+          kiro: "~/.kiro/steering/", "claude-code": "~/.claude/commands/",
+          cursor: "~/.cursor/commands/", windsurf: "~/.codeium/windsurf/global_workflows/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+      if (repo) {
+        const m: Record<string, string> = {
+          kiro: "<repo>/.kiro/steering/", "claude-code": "<repo>/.claude/commands/",
+          cursor: "<repo>/.cursor/commands/", copilot: "<repo>/.github/prompts/",
+          windsurf: "<repo>/.windsurf/workflows/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+    } else if (type === "rule") {
+      if (home) {
+        const m: Record<string, string> = {
+          kiro: "~/.kiro/steering/", cursor: "~/.cursor/rules/",
+          copilot: "~/.copilot/", windsurf: "~/.codeium/windsurf/",
+          "claude-code": "~/.claude/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+      if (repo) {
+        const m: Record<string, string> = {
+          kiro: "<repo>/.kiro/steering/", cursor: "<repo>/.cursor/rules/",
+          copilot: "<repo>/.github/instructions/", windsurf: "<repo>/.windsurf/rules/",
+          "claude-code": "<repo>/.claude/rules/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+    } else if (type === "hook") {
+      const m: Record<string, string> = {
+        kiro: "<repo>/.kiro/hooks/", copilot: "<repo>/.github/hooks/",
+      };
+      if (m[toolSlug]) parts.push(m[toolSlug]);
+    } else if (type === "agent") {
+      if (home) {
+        const m: Record<string, string> = {
+          github: "~/.copilot/agents/", cursor: "~/.cursor/agents/",
+          kiro: "~/.kiro/agents/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+      if (repo) {
+        const m: Record<string, string> = {
+          github: "<repo>/.github/agents/", claude: "<repo>/.claude/agents/",
+          cursor: "<repo>/.cursor/agents/", kiro: "<repo>/.kiro/agents/",
+        };
+        if (m[toolSlug]) parts.push(m[toolSlug]);
+      }
+    } else if (type === "package") {
+      const m: Record<string, string> = {
+        "claude-code": "~/.claude/plugins/",
+      };
+      if (m[toolSlug]) parts.push(m[toolSlug]);
+    }
+    return parts.join(" + ");
+  }
+
+  /** Tool columns for artifact cards — selected tools that are relevant */
+  let artifactToolCols = $derived.by(() => {
+    return (installPaths?.toolPaths ?? [])
+      .filter(tp => selectedTools.has(tp.tool))
+      .map(tp => ({
+        key: tp.tool.toLowerCase().replace(/\s/g, "-"),
+        label: tp.tool,
+      }));
+  });
+
+  function toggleCard(cardId: string) {
+    const next = new Set(expandedCards);
+    if (next.has(cardId)) next.delete(cardId); else next.add(cardId);
+    expandedCards = next;
+  }
 
   let hasOlafData = $derived(settingsStore.isArtifactEnabled("olafData"));
 
@@ -749,14 +916,20 @@
     </div>
     {/if}
 
-    <!-- POWERS detail -->
-    {#if allPowers.length > 0}
+    <!-- POWERS detail (home-scoped only, Kiro) -->
+    {#if allPowers.length > 0 && scopeIncludesHome}
       <div class="border border-purple-200 dark:border-purple-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-purple-50 dark:bg-purple-900/20 flex items-center gap-2">
-          <span class="text-sm">⚡</span>
-          <p class="text-sm font-medium text-purple-800 dark:text-purple-200">Kiro Powers</p>
-          <span class="text-xs text-purple-500 dark:text-purple-400 ml-auto">Always-active context packages for Kiro</span>
-        </div>
+        <button onclick={() => toggleCard('powers')} class="w-full px-3 py-2 bg-purple-50 dark:bg-purple-900/20 flex items-center justify-between cursor-pointer hover:bg-purple-100 dark:hover:bg-purple-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">⚡</span>
+            <p class="text-sm font-medium text-purple-800 dark:text-purple-200">Kiro Powers</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-purple-500 dark:text-purple-400">{allPowers.length} powers · ~/.kiro/powers/</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('powers') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('powers')}
         <div class="p-3 space-y-1">
           {#each allPowers as power}
             {@const status = powerStatusMap[power] ?? "new"}
@@ -774,6 +947,7 @@
             </div>
           {/each}
         </div>
+        {/if}
       </div>
     {/if}
 
@@ -784,11 +958,17 @@
         return tl.includes("kiro") || tl.includes("claude") || tl.includes("cursor") || tl.includes("windsurf") || tl.includes("copilot");
       })}
       <div class="border border-cyan-200 dark:border-cyan-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-cyan-50 dark:bg-cyan-900/20 flex items-center gap-2">
-          <span class="text-sm">🔌</span>
-          <p class="text-sm font-medium text-cyan-800 dark:text-cyan-200">MCP Servers</p>
-          <span class="text-xs text-cyan-500 dark:text-cyan-400 ml-auto">Injected into tool config files</span>
-        </div>
+        <button onclick={() => toggleCard('mcp')} class="w-full px-3 py-2 bg-cyan-50 dark:bg-cyan-900/20 flex items-center justify-between cursor-pointer hover:bg-cyan-100 dark:hover:bg-cyan-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">🔌</span>
+            <p class="text-sm font-medium text-cyan-800 dark:text-cyan-200">MCP Servers</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-cyan-500 dark:text-cyan-400">{allMcpServers.length} servers</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('mcp') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('mcp')}
         <div class="p-3 space-y-2">
           {#each allMcpServers as mcpId}
             {@const def = mcpDefs[mcpId]}
@@ -848,17 +1028,24 @@
             {/if}
           </div>
         </div>
+        {/if}
       </div>
     {/if}
 
     <!-- SYSTEMS -->
     {#if allSystems.length > 0}
       <div class="border border-orange-200 dark:border-orange-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-orange-50 dark:bg-orange-900/20 flex items-center gap-2">
-          <span class="text-sm">🚀</span>
-          <p class="text-sm font-medium text-orange-800 dark:text-orange-200">Agentic Systems</p>
-          <span class="text-xs text-orange-500 dark:text-orange-400 ml-auto">Cloned to ~/.haal/systems/</span>
-        </div>
+        <button onclick={() => toggleCard('systems')} class="w-full px-3 py-2 bg-orange-50 dark:bg-orange-900/20 flex items-center justify-between cursor-pointer hover:bg-orange-100 dark:hover:bg-orange-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">🚀</span>
+            <p class="text-sm font-medium text-orange-800 dark:text-orange-200">Agentic Systems</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-orange-500 dark:text-orange-400">{allSystems.length} systems</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('systems') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('systems')}
         <div class="p-3 space-y-1">
           {#each allSystems as sysId}
             {@const sysEntry = componentsStore.mergedCatalog?.systems.find(s => s.id === sysId)}
@@ -873,112 +1060,317 @@
             </div>
           {/each}
         </div>
+        {/if}
       </div>
     {/if}
 
     <!-- COMMANDS detail -->
     {#if allCommands.length > 0}
+      {@const scoped = filterByScope(allCommands)}
+      {@const grouped = groupByNameAndTool(scoped)}
+      {@const visibleNames = grouped.names.filter(n => {
+        const tools = grouped.toolMap.get(n)!;
+        return artifactToolCols.some(c => tools.has(c.key));
+      })}
+      {#if visibleNames.length > 0}
       <div class="border border-blue-200 dark:border-blue-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-blue-50 dark:bg-blue-900/20 flex items-center gap-2">
-          <span class="text-sm">💬</span>
-          <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Commands</p>
-          <span class="text-xs text-blue-500 dark:text-blue-400 ml-auto">Slash commands / workflows</span>
-        </div>
-        <div class="p-3 space-y-1">
-          {#each allCommands as cmd}
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{cmd}</span>
-              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400">+ new</span>
+        <button onclick={() => toggleCard('commands')} class="w-full px-3 py-2 bg-blue-50 dark:bg-blue-900/20 flex items-center justify-between cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">💬</span>
+            <p class="text-sm font-medium text-blue-800 dark:text-blue-200">Commands</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-blue-500 dark:text-blue-400">{visibleNames.length} commands</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('commands') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('commands')}
+        <div class="p-3">
+          {#if artifactToolCols.length > 0}
+            <div class="grid gap-1 mb-1" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+              <span class="text-xs text-gray-400 dark:text-gray-500">Command</span>
+              {#each artifactToolCols as col}
+                {@const hint = destHint('command', col.key)}
+                <span class="text-center">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 block">{col.label}</span>
+                  {#if hint}
+                    <span class="text-[10px] text-gray-400/60 dark:text-gray-600 font-mono block truncate" title={hint}>{hint}</span>
+                  {/if}
+                </span>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          <div class="space-y-1">
+            {#each visibleNames as name}
+              {@const tools = grouped.toolMap.get(name)!}
+              <div class="grid gap-1 items-center" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                {#each artifactToolCols as col}
+                  <span class="text-center">
+                    {#if tools.has(col.key)}
+                      <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">+ new</span>
+                    {:else}
+                      <span class="text-gray-300 dark:text-gray-600">—</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
         </div>
+        {/if}
       </div>
+      {/if}
     {/if}
 
     <!-- RULES detail -->
     {#if allRules.length > 0}
+      {@const scoped = filterByScope(allRules)}
+      {@const grouped = groupByNameAndTool(scoped)}
+      {@const visibleNames = grouped.names.filter(n => {
+        const tools = grouped.toolMap.get(n)!;
+        return artifactToolCols.some(c => tools.has(c.key));
+      })}
+      {#if visibleNames.length > 0}
       <div class="border border-indigo-200 dark:border-indigo-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 flex items-center gap-2">
-          <span class="text-sm">📏</span>
-          <p class="text-sm font-medium text-indigo-800 dark:text-indigo-200">Rules</p>
-          <span class="text-xs text-indigo-500 dark:text-indigo-400 ml-auto">Always-on steering / instructions</span>
-        </div>
-        <div class="p-3 space-y-1">
-          {#each allRules as rule}
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{rule}</span>
-              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400">+ new</span>
+        <button onclick={() => toggleCard('rules')} class="w-full px-3 py-2 bg-indigo-50 dark:bg-indigo-900/20 flex items-center justify-between cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">📏</span>
+            <p class="text-sm font-medium text-indigo-800 dark:text-indigo-200">Rules</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-indigo-500 dark:text-indigo-400">{visibleNames.length} rules</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('rules') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('rules')}
+        <div class="p-3">
+          {#if artifactToolCols.length > 0}
+            <div class="grid gap-1 mb-1" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+              <span class="text-xs text-gray-400 dark:text-gray-500">Rule</span>
+              {#each artifactToolCols as col}
+                {@const hint = destHint('rule', col.key)}
+                <span class="text-center">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 block">{col.label}</span>
+                  {#if hint}
+                    <span class="text-[10px] text-gray-400/60 dark:text-gray-600 font-mono block truncate" title={hint}>{hint}</span>
+                  {/if}
+                </span>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          <div class="space-y-1">
+            {#each visibleNames as name}
+              {@const tools = grouped.toolMap.get(name)!}
+              <div class="grid gap-1 items-center" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                {#each artifactToolCols as col}
+                  <span class="text-center">
+                    {#if tools.has(col.key)}
+                      <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">+ new</span>
+                    {:else}
+                      <span class="text-gray-300 dark:text-gray-600">—</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
         </div>
+        {/if}
       </div>
+      {/if}
     {/if}
 
-    <!-- HOOKS detail -->
-    {#if allHooks.length > 0}
+    <!-- HOOKS detail (repo-scoped only) -->
+    {#if allHooks.length > 0 && scopeIncludesRepo}
+      {@const grouped = groupByNameAndTool(allHooks)}
+      {@const visibleNames = grouped.names.filter(n => {
+        const tools = grouped.toolMap.get(n)!;
+        return artifactToolCols.some(c => tools.has(c.key));
+      })}
+      {#if visibleNames.length > 0}
       <div class="border border-amber-200 dark:border-amber-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-amber-50 dark:bg-amber-900/20 flex items-center gap-2">
-          <span class="text-sm">🪝</span>
-          <p class="text-sm font-medium text-amber-800 dark:text-amber-200">Hooks</p>
-          <span class="text-xs text-amber-500 dark:text-amber-400 ml-auto">Kiro automation hooks</span>
-        </div>
-        <div class="p-3 space-y-1">
-          {#each allHooks as hook}
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{hook}</span>
-              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400">+ new</span>
+        <button onclick={() => toggleCard('hooks')} class="w-full px-3 py-2 bg-amber-50 dark:bg-amber-900/20 flex items-center justify-between cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">🪝</span>
+            <p class="text-sm font-medium text-amber-800 dark:text-amber-200">Hooks</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-amber-500 dark:text-amber-400">{visibleNames.length} hooks</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('hooks') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('hooks')}
+        <div class="p-3">
+          {#if artifactToolCols.length > 0}
+            <div class="grid gap-1 mb-1" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+              <span class="text-xs text-gray-400 dark:text-gray-500">Hook</span>
+              {#each artifactToolCols as col}
+                {@const hint = destHint('hook', col.key)}
+                <span class="text-center">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 block">{col.label}</span>
+                  {#if hint}
+                    <span class="text-[10px] text-gray-400/60 dark:text-gray-600 font-mono block truncate" title={hint}>{hint}</span>
+                  {/if}
+                </span>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          <div class="space-y-1">
+            {#each visibleNames as name}
+              {@const tools = grouped.toolMap.get(name)!}
+              <div class="grid gap-1 items-center" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                {#each artifactToolCols as col}
+                  <span class="text-center">
+                    {#if tools.has(col.key)}
+                      <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">+ new</span>
+                    {:else}
+                      <span class="text-gray-300 dark:text-gray-600">—</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
         </div>
+        {/if}
       </div>
+      {/if}
     {/if}
 
     <!-- AGENTS detail -->
     {#if allAgents.length > 0}
+      {@const grouped = groupByNameAndTool(allAgents)}
+      {@const visibleNames = grouped.names.filter(n => {
+        const tools = grouped.toolMap.get(n)!;
+        return artifactToolCols.some(c => tools.has(c.key));
+      })}
+      {#if visibleNames.length > 0}
       <div class="border border-rose-200 dark:border-rose-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-rose-50 dark:bg-rose-900/20 flex items-center gap-2">
-          <span class="text-sm">🤖</span>
-          <p class="text-sm font-medium text-rose-800 dark:text-rose-200">Agents</p>
-          <span class="text-xs text-rose-500 dark:text-rose-400 ml-auto">Custom agent definitions</span>
-        </div>
-        <div class="p-3 space-y-1">
-          {#each allAgents as agent}
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{agent}</span>
-              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400">+ new</span>
+        <button onclick={() => toggleCard('agents')} class="w-full px-3 py-2 bg-rose-50 dark:bg-rose-900/20 flex items-center justify-between cursor-pointer hover:bg-rose-100 dark:hover:bg-rose-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">🤖</span>
+            <p class="text-sm font-medium text-rose-800 dark:text-rose-200">Agents</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-rose-500 dark:text-rose-400">{visibleNames.length} agents</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('agents') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('agents')}
+        <div class="p-3">
+          {#if artifactToolCols.length > 0}
+            <div class="grid gap-1 mb-1" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+              <span class="text-xs text-gray-400 dark:text-gray-500">Agent</span>
+              {#each artifactToolCols as col}
+                {@const hint = destHint('agent', col.key)}
+                <span class="text-center">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 block">{col.label}</span>
+                  {#if hint}
+                    <span class="text-[10px] text-gray-400/60 dark:text-gray-600 font-mono block truncate" title={hint}>{hint}</span>
+                  {/if}
+                </span>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          <div class="space-y-1">
+            {#each visibleNames as name}
+              {@const tools = grouped.toolMap.get(name)!}
+              <div class="grid gap-1 items-center" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                {#each artifactToolCols as col}
+                  <span class="text-center">
+                    {#if tools.has(col.key)}
+                      <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">+ new</span>
+                    {:else}
+                      <span class="text-gray-300 dark:text-gray-600">—</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
         </div>
+        {/if}
       </div>
+      {/if}
     {/if}
 
-    <!-- PACKAGES detail -->
-    {#if allPackages.length > 0 && settingsStore.isArtifactEnabled("packages")}
+    <!-- PACKAGES detail (home-scoped only) -->
+    {#if allPackages.length > 0 && settingsStore.isArtifactEnabled("packages") && scopeIncludesHome}}
+      {@const grouped = groupByNameAndTool(allPackages)}
+      {@const visibleNames = grouped.names.filter(n => {
+        const tools = grouped.toolMap.get(n)!;
+        return artifactToolCols.some(c => tools.has(c.key));
+      })}
+      {#if visibleNames.length > 0}
       <div class="border border-violet-200 dark:border-violet-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-violet-50 dark:bg-violet-900/20 flex items-center gap-2">
-          <span class="text-sm">📦</span>
-          <p class="text-sm font-medium text-violet-800 dark:text-violet-200">Packages</p>
-          <span class="text-xs text-violet-500 dark:text-violet-400 ml-auto">Claude plugins → ~/.claude/plugins/ · Kiro packages → ~/.kiro/packages/</span>
-        </div>
-        <div class="p-3 space-y-1">
-          {#each allPackages as pkg}
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{pkg}</span>
-              <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400">+ new</span>
+        <button onclick={() => toggleCard('packages')} class="w-full px-3 py-2 bg-violet-50 dark:bg-violet-900/20 flex items-center justify-between cursor-pointer hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">📦</span>
+            <p class="text-sm font-medium text-violet-800 dark:text-violet-200">Packages</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-violet-500 dark:text-violet-400">{visibleNames.length} packages</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('packages') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('packages')}
+        <div class="p-3">
+          {#if artifactToolCols.length > 0}
+            <div class="grid gap-1 mb-1" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+              <span class="text-xs text-gray-400 dark:text-gray-500">Package</span>
+              {#each artifactToolCols as col}
+                {@const hint = destHint('package', col.key)}
+                <span class="text-center">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 block">{col.label}</span>
+                  {#if hint}
+                    <span class="text-[10px] text-gray-400/60 dark:text-gray-600 font-mono block truncate" title={hint}>{hint}</span>
+                  {/if}
+                </span>
+              {/each}
             </div>
-          {/each}
+          {/if}
+          <div class="space-y-1">
+            {#each visibleNames as name}
+              {@const tools = grouped.toolMap.get(name)!}
+              <div class="grid gap-1 items-center" style="grid-template-columns: 1fr {artifactToolCols.map(() => '6rem').join(' ')}">
+                <span class="text-xs font-mono text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                {#each artifactToolCols as col}
+                  <span class="text-center">
+                    {#if tools.has(col.key)}
+                      <span class="inline-block px-1.5 py-0.5 text-xs rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">+ new</span>
+                    {:else}
+                      <span class="text-gray-300 dark:text-gray-600">—</span>
+                    {/if}
+                  </span>
+                {/each}
+              </div>
+            {/each}
+          </div>
         </div>
+        {/if}
       </div>
+      {/if}
     {/if}
 
     <!-- OLAF DATA detail -->
-    {#if hasOlafData && wizardStore.installScope !== "home"}
+    <!-- OLAF DATA detail (repo-scoped only) -->
+    {#if hasOlafData && scopeIncludesRepo}
       <div class="border border-teal-200 dark:border-teal-800 rounded-lg overflow-hidden">
-        <div class="px-3 py-2 bg-teal-50 dark:bg-teal-900/20 flex items-center gap-2">
-          <span class="text-sm">🗂</span>
-          <p class="text-sm font-medium text-teal-800 dark:text-teal-200">.olaf/data</p>
-          <span class="text-xs text-teal-500 dark:text-teal-400 ml-auto">Will be merged into repo · .olaf/work/ added to .gitignore</span>
-        </div>
+        <button onclick={() => toggleCard('olafData')} class="w-full px-3 py-2 bg-teal-50 dark:bg-teal-900/20 flex items-center justify-between cursor-pointer hover:bg-teal-100 dark:hover:bg-teal-900/30 transition-colors">
+          <span class="flex items-center gap-2">
+            <span class="text-sm">🗂</span>
+            <p class="text-sm font-medium text-teal-800 dark:text-teal-200">.olaf/data</p>
+          </span>
+          <span class="flex items-center gap-2">
+            <span class="text-xs text-teal-500 dark:text-teal-400">Knowledge base</span>
+            <span class="text-xs text-gray-400">{expandedCards.has('olafData') ? '▲' : '▼'}</span>
+          </span>
+        </button>
+        {#if expandedCards.has('olafData')}
         <div class="p-3">
           <p class="text-xs text-gray-500 dark:text-gray-400">
             Knowledge base folders (product/, practices/, people/, project/) from the registry will be merged into
@@ -986,6 +1378,7 @@
             Empty or placeholder-only folders are skipped.
           </p>
         </div>
+        {/if}
       </div>
     {/if}
 
