@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use tracing::debug;
-
-use crate::errors::{FileSystemError, HaalError, ValidationError};
+use crate::errors::{HaalError, ValidationError};
 use crate::models::{Component, Destination, Manifest};
 use crate::traits::ToolAdapter;
 
