@@ -1,0 +1,14 @@
+# Cargo audit configuration
+# See: https://github.com/rustsec/rustsec/blob/main/cargo-audit/audit.toml.example
+
+[advisories]
+# Ignore unmaintained GTK3 binding warnings — these are transitive
+# dependencies of Tauri's Linux runtime (via gtk 0.18.x, wry, tao).
+# Tauri upstream tracks migration to GTK4; nothing we can do here.
+ignore = [
+    "RUSTSEC-2024-0412", # gdk (gtk-rs GTK3 bindings unmaintained)
+    "RUSTSEC-2024-0413", # atk (gtk-rs GTK3 bindings unmaintained)
+    "RUSTSEC-2024-0416", # atk-sys (gtk-rs GTK3 bindings unmaintained)
+    "RUSTSEC-2024-0418", # gdk-sys (gtk-rs GTK3 bindings unmaintained)
+    "RUSTSEC-2025-0057", # fxhash (unmaintained, used by selectors via tauri-utils)
+]
