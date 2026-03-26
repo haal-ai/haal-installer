@@ -20,3 +20,6 @@ jobs:
         with:
           fail-on-severity: high
           comment-summary-in-pr: always
+        # Requires Dependency Graph enabled in repo settings:
+        # Settings → Code security → Dependency graph → Enable
+        continue-on-error: true
