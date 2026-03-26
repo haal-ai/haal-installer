@@ -38,4 +38,4 @@ tauri-plugin-process = "2"
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
-mockall = "0.13"
+mockall = "0.14"
