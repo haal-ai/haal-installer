@@ -1,6 +1,6 @@
 [package]
 name = "haal-installer"
-version = "0.2.2"
+version = "0.2.3"
 description = "HAAL Installer - AI Coding Tool Component Manager"
 authors = ["HAAL Team"]
 edition = "2021"
