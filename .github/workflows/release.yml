@@ -43,7 +43,7 @@ jobs:
           echo "OPENSSL_LIB_DIR=$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: lts/*
           cache: 'npm'
