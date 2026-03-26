@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { componentsStore, type SystemEntry } from "../stores/componentsStore.svelte";
+  import { wizardStore } from "../stores/wizardStore.svelte";
 
   interface Props {
     onNavigate?: (view: string) => void;
@@ -51,6 +52,8 @@
 
   let systems = $derived(componentsStore.mergedCatalog?.systems ?? []);
   let isConnected = $derived(componentsStore.mergedCatalog !== null);
+  let catalogLoading = $derived(componentsStore.loading);
+  let catalogError = $state<string | null>(null);
 
   // --- Load on mount ---
 

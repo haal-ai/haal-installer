@@ -8,11 +8,12 @@
 
   let { activeView, onNavigate }: Props = $props();
 
-  const navItems = [
+  const navItems: { id: string; icon: string; labelKey: string }[] = [
     { id: "wizard",   icon: "wand",     labelKey: "nav.wizard" },
+    { id: "systems",  icon: "rocket",   labelKey: "nav.systems" },
     { id: "settings", icon: "cog",      labelKey: "nav.settings" },
     { id: "logs",     icon: "document", labelKey: "nav.logs" },
-  ] as const;
+  ];
 </script>
 
 <nav
