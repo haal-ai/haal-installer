@@ -5,6 +5,23 @@ pub mod conflict_detector;
 pub mod content_hasher;
 pub mod destination_resolver;
 pub mod requirement_checker;pub mod errors;
+
+// ---------------------------------------------------------------------------
+// Windows: hide console windows spawned by background Command calls
+// ---------------------------------------------------------------------------
+
+/// Returns the `CREATE_NO_WINDOW` creation flags on Windows (0x0800_0000)
+/// so that `Command::new(...)` calls don't flash a visible console.
+/// On non-Windows platforms this is a no-op returning 0.
+#[cfg(windows)]
+pub(crate) fn no_window_flags() -> u32 {
+    0x0800_0000 // CREATE_NO_WINDOW
+}
+
+#[cfg(not(windows))]
+pub(crate) fn no_window_flags() -> u32 {
+    0
+}
 pub mod github_auth;
 pub mod installer;
 pub mod logging;
@@ -126,9 +143,14 @@ fn relaunch_from_home() -> Result<(), String> {
 #[tauri::command]
 fn check_gh_cli() -> serde_json::Value {
     // Check if gh is installed
-    let installed = std::process::Command::new("gh")
-        .arg("--version")
-        .output()
+    let mut cmd = std::process::Command::new("gh");
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
+    }
+    let installed = cmd.output()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -137,11 +159,16 @@ fn check_gh_cli() -> serde_json::Value {
     }
 
     // Unset GITHUB_TOKEN/GH_TOKEN so we check stored credentials, not the env var
-    let authenticated = std::process::Command::new("gh")
-        .args(["auth", "status"])
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["auth", "status"])
         .env_remove("GITHUB_TOKEN")
-        .env_remove("GH_TOKEN")
-        .output()
+        .env_remove("GH_TOKEN");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
+    }
+    let authenticated = cmd.output()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
@@ -150,11 +177,16 @@ fn check_gh_cli() -> serde_json::Value {
     }
 
     // Fetch the username of the stored account
-    let username = std::process::Command::new("gh")
-        .args(["api", "user", "--jq", ".login"])
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["api", "user", "--jq", ".login"])
         .env_remove("GITHUB_TOKEN")
-        .env_remove("GH_TOKEN")
-        .output()
+        .env_remove("GH_TOKEN");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
+    }
+    let username = cmd.output()
         .ok()
         .and_then(|o| if o.status.success() { Some(o.stdout) } else { None })
         .map(|b| String::from_utf8_lossy(&b).trim().to_string())
@@ -205,11 +237,16 @@ async fn authenticate_gh_cli(enterprise_url: Option<String>) -> Result<GitHubCre
         !u.is_empty() && !u.contains("github.com/")
     });
     // Run `gh auth token` to get the stored token (ignore env var)
-    let output = std::process::Command::new("gh")
-        .args(["auth", "token"])
+    let mut cmd = std::process::Command::new("gh");
+    cmd.args(["auth", "token"])
         .env_remove("GITHUB_TOKEN")
-        .env_remove("GH_TOKEN")
-        .output()
+        .env_remove("GH_TOKEN");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
+    }
+    let output = cmd.output()
         .map_err(|_| "GitHub CLI (gh) not found. Please install it from https://cli.github.com and run `gh auth login` first.".to_string())?;
 
     if !output.status.success() {

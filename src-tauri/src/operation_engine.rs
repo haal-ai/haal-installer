@@ -1068,9 +1068,14 @@ fn available_disk_space(path: &Path) -> u64 {
             drive.trim_end_matches('\\').trim_end_matches(':')
         );
 
-        let output = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", &script])
-            .output();
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(crate::no_window_flags());
+        }
+        let output = cmd.output();
 
         if let Ok(output) = output {
             let stdout = String::from_utf8_lossy(&output.stdout);

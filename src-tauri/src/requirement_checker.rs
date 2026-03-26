@@ -176,9 +176,14 @@ fn detect_runtime(name: &str) -> (bool, Option<String>) {
         other                 => (other,     &["--version"]),
     };
 
-    let output = std::process::Command::new(cmd)
-        .args(args)
-        .output();
+    let mut command = std::process::Command::new(cmd);
+    command.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(crate::no_window_flags());
+    }
+    let output = command.output();
 
     match output {
         Err(_) => (false, None),

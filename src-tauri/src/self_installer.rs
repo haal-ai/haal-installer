@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::errors::{FileSystemError, HaalError};
+use crate::no_window_flags;
 
 /// Subdirectories that must exist under HAAL_HOME.
 const HOME_SUBDIRS: &[&str] = &[
@@ -235,12 +236,17 @@ impl SelfInstaller {
         #[cfg(windows)]
         {
             // Read current user PATH from registry
-            let output = Command::new("powershell")
-                .args([
+            let mut cmd = Command::new("powershell");
+            cmd.args([
                     "-NoProfile", "-Command",
                     "[System.Environment]::GetEnvironmentVariable('PATH','User')",
-                ])
-                .output()
+                ]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(no_window_flags());
+            }
+            let output = cmd.output()
                 .map_err(|e| HaalError::FileSystem(FileSystemError {
                     message: format!("Failed to read PATH: {e}"),
                     path: None,
@@ -256,14 +262,19 @@ impl SelfInstaller {
                 } else {
                     format!("{current};{bin_str}")
                 };
-                Command::new("powershell")
-                    .args([
+                let mut cmd = Command::new("powershell");
+                cmd.args([
                         "-NoProfile", "-Command",
                         &format!(
                             "[System.Environment]::SetEnvironmentVariable('PATH','{new_path}','User')"
                         ),
-                    ])
-                    .status()
+                    ]);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(no_window_flags());
+                }
+                cmd.status()
                     .map_err(|e| HaalError::FileSystem(FileSystemError {
                         message: format!("Failed to set PATH: {e}"),
                         path: None,

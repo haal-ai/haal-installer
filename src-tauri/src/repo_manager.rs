@@ -175,10 +175,15 @@ impl RepoManager {
     }
 
     fn git_clone(&self, url: &str, branch: &str, dest: &Path) -> Result<(), HaalError> {
-        let output = std::process::Command::new("git")
-            .args(["clone", "--depth", "1", "--branch", branch, url, "."])
-            .current_dir(dest)
-            .output()
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["clone", "--depth", "1", "--branch", branch, url, "."])
+            .current_dir(dest);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(crate::no_window_flags());
+        }
+        let output = cmd.output()
             .map_err(|e| HaalError::Network(NetworkError {
                 message: format!("git not found or clone failed: {e}"),
                 url: Some(url.to_string()),
@@ -198,10 +203,15 @@ impl RepoManager {
 
     fn git_pull(&self, repo_path: &Path) -> Result<(), HaalError> {
         // Non-fatal: if pull fails (offline), we use the cached version
-        let _ = std::process::Command::new("git")
-            .args(["pull", "--ff-only"])
-            .current_dir(repo_path)
-            .output();
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["pull", "--ff-only"])
+            .current_dir(repo_path);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(crate::no_window_flags());
+        }
+        let _ = cmd.output();
         Ok(())
     }
 

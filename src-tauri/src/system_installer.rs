@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::models::{InstalledSystemInfo, SystemDef, SystemEntry, SystemStatus};
+use crate::no_window_flags;
 
 /// Root directory where all systems are installed: ~/.haal/systems/
 pub fn systems_root() -> PathBuf {
@@ -208,6 +209,11 @@ fn run_git(args: &[&str], cwd: Option<&Path>) -> Result<(), String> {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
+    }
     let output = cmd
         .output()
         .map_err(|e| format!("Failed to run git: {e}"))?;
@@ -223,6 +229,11 @@ fn run_git_output(args: &[&str], cwd: Option<&Path>) -> Result<String, String> {
     cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(no_window_flags());
     }
     let output = cmd
         .output()
